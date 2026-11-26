@@ -3,61 +3,56 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import queue
+import secrets
 import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 import urllib.error
 import urllib.request
 import webbrowser
-from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from agsync.adapters.network import (
+    WindowsJobObject,
+    build_opener_for_url,
+    inspect_windows_network_profiles,
+    tcp_check,
+    validate_port,
+)
 from agsync.client import SyncClient, SyncClientError
+from agsync.commands.doctor import run_doctor
 from agsync.config import (
     configure_antigravity_mcp,
-    copy_project_templates,
     default_agent_id,
     detect_lan_ip,
     load_config,
     save_config,
 )
+from agsync.db import default_data_dir
 from agsync.discovery import DEFAULT_DISCOVERY_PORT, discover_hubs
+
+MAX_LOG_LINES = 1000
 
 
 def check_health(url: str, timeout: float = 2.5) -> tuple[bool, str]:
-    """Check /health endpoint and return (ok, response_or_error)."""
+    """Check /health endpoint bypassing system proxies for local/LAN URLs."""
+    target = f"{url.rstrip('/')}/health"
     try:
-        req = urllib.request.Request(f"{url.rstrip('/')}/health", method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = build_opener_for_url(target)
+        req = urllib.request.Request(target, method="GET")
+        with opener.open(req, timeout=timeout) as resp:
             return True, resp.read().decode("utf-8", errors="replace")
     except urllib.error.URLError as exc:
         return False, str(exc.reason)
-    except Exception as exc:
-        return False, str(exc)
-
-
-def ping_host(ip: str) -> tuple[bool, str]:
-    """Run a single ICMP ping to check LAN reachability."""
-    count_flag = "-n" if os.name == "nt" else "-c"
-    wait_flag = "-w" if os.name == "nt" else "-W"
-    wait_val = "1500" if os.name == "nt" else "2"
-    try:
-        res = subprocess.run(
-            ["ping", count_flag, "1", wait_flag, wait_val, ip],
-            capture_output=True,
-            text=True,
-            timeout=4,
-        )
-        return res.returncode == 0, res.stdout.strip()
     except Exception as exc:
         return False, str(exc)
 
@@ -70,10 +65,13 @@ class AgsyncControlPanel:
             self.cfg["mode"] = initial_mode
 
         self.root.title("agsync Unified Control Panel")
-        self.root.geometry("840x680")
-        self.root.minsize(740, 580)
+        self.root.geometry("860x700")
+        self.root.minsize(760, 600)
 
-        self.server_proc: subprocess.Popen[str] | None = None
+        self.server_proc: subprocess.Popen[bytes] | None = None
+        self._server_log_fh = None
+        self._tail_stop = threading.Event()
+        self._job = WindowsJobObject()
         self.log_queue: queue.Queue[str] = queue.Queue()
 
         self._build_ui()
@@ -128,7 +126,7 @@ class AgsyncControlPanel:
         self.port_var = tk.StringVar(value=str(self.cfg.get("port", 8765)))
         ttk.Entry(net_frame, textvariable=self.port_var, width=7).grid(row=0, column=5, padx=4, pady=6)
 
-        ttk.Label(net_frame, text="Token (opt):").grid(row=1, column=0, padx=6, pady=6, sticky="w")
+        ttk.Label(net_frame, text="Token:").grid(row=1, column=0, padx=6, pady=6, sticky="w")
         self.token_var = tk.StringVar(value=str(self.cfg.get("token", "")))
         ttk.Entry(net_frame, textvariable=self.token_var, width=18, show="*").grid(row=1, column=1, padx=4, pady=6)
 
@@ -136,6 +134,7 @@ class AgsyncControlPanel:
         net_btns.grid(row=1, column=2, columnspan=4, padx=4, pady=6, sticky="w")
         ttk.Button(net_btns, text="Detect My IP", command=self._refresh_ip).pack(side="left", padx=3)
         ttk.Button(net_btns, text="Discover LAN Hub", command=self.discover_lan).pack(side="left", padx=3)
+        ttk.Button(net_btns, text="Generate Token", command=self._generate_token).pack(side="left", padx=3)
         ttk.Button(net_btns, text="Save Config", command=self._save_current_config).pack(side="left", padx=3)
 
         # 2. Hub & Diagnostics Controls
@@ -160,9 +159,10 @@ class AgsyncControlPanel:
         row2 = ttk.Frame(ctrl_frame)
         row2.pack(fill="x", padx=6, pady=4)
 
-        ttk.Button(row2, text="Test Connection (Ping + /health)", command=self.run_diagnostics).pack(
+        ttk.Button(row2, text="Test Connection (TCP + /health)", command=self.run_diagnostics).pack(
             side="left", padx=4
         )
+        ttk.Button(row2, text="Run Doctor", command=self.run_doctor_ui).pack(side="left", padx=4)
         ttk.Button(row2, text="Check Live Agents & Locks", command=self.check_status).pack(side="left", padx=4)
         ttk.Button(row2, text="Open Web Dashboard", command=self.open_dashboard).pack(side="left", padx=4)
 
@@ -190,9 +190,10 @@ class AgsyncControlPanel:
             r_setup, textvariable=self.mcp_mode_var, values=["http", "stdio"], width=8, state="readonly"
         ).pack(side="left", padx=4)
         ttk.Button(r_setup, text="Connect Antigravity MCP", command=self.connect_mcp).pack(side="left", padx=6)
-        ttk.Button(r_setup, text="Install Repo Hooks & Templates", command=self.attach_repo).pack(
-            side="left", padx=4
+        self.attach_btn = ttk.Button(
+            r_setup, text="Install Repo Hooks & Templates", command=self.attach_repo
         )
+        self.attach_btn.pack(side="left", padx=4)
 
         # 4. Live Logs Console
         log_frame = ttk.LabelFrame(self.root, text="Live Logs & Step-by-Step Error Diagnostics")
@@ -211,17 +212,32 @@ class AgsyncControlPanel:
             insertbackground="white",
         )
         self.log_box.pack(fill="both", expand=True, padx=6, pady=6)
-        self.log(f"Unified Panel ready. Root: {ROOT_DIR}")
+        self.log(f"Unified Panel ready. Data dir: {default_data_dir()}")
+
+    def _validated_port(self) -> int | None:
+        raw = self.port_var.get().strip() or "8765"
+        try:
+            return validate_port(raw)
+        except ValueError as exc:
+            self.log(f"Invalid port: {exc}")
+            messagebox.showerror("Invalid Port", str(exc))
+            return None
 
     def _server_url(self) -> str:
         ip = self.host_ip_var.get().strip() or "127.0.0.1"
         port = self.port_var.get().strip() or "8765"
         return f"http://{ip}:{port}"
 
+    def _generate_token(self) -> None:
+        tok = secrets.token_urlsafe(18)
+        self.token_var.set(tok)
+        self._save_current_config()
+        self.log("Generated new Bearer token and saved config.")
+
     def _save_current_config(self) -> None:
         port_raw = self.port_var.get().strip() or "8765"
         try:
-            port_num = int(port_raw)
+            port_num = validate_port(port_raw)
         except ValueError:
             port_num = 8765
         data = {
@@ -270,8 +286,15 @@ class AgsyncControlPanel:
         self.log_queue.put(f"[{ts}] {msg}\n")
 
     def _poll_logs(self) -> None:
-        while not self.log_queue.empty():
+        inserted = 0
+        while not self.log_queue.empty() and inserted < 100:
             self.log_box.insert("end", self.log_queue.get_nowait())
+            inserted += 1
+        if inserted:
+            total_lines = int(self.log_box.index("end-1c").split(".")[0])
+            if total_lines > MAX_LOG_LINES:
+                excess = total_lines - MAX_LOG_LINES
+                self.log_box.delete("1.0", f"{excess + 1}.0")
             self.log_box.see("end")
         self.root.after(150, self._poll_logs)
 
@@ -304,56 +327,119 @@ class AgsyncControlPanel:
     def start_server(self) -> None:
         if self.server_proc is not None and self.server_proc.poll() is None:
             return
+        port_num = self._validated_port()
+        if port_num is None:
+            return
+
+        if not self.token_var.get().strip():
+            # Non-loopback binding requires a Bearer token; auto-generate and persist one.
+            self.token_var.set(secrets.token_urlsafe(18))
+            self.log("Auto-generated Bearer token for secure LAN binding (share with Peer).")
         self._save_current_config()
-        port = self.port_var.get().strip() or "8765"
-        cmd = [sys.executable, "-m", "agsync.cli", "serve", "--host", "0.0.0.0", "--port", port]
-        if self.token_var.get().strip():
-            cmd.extend(["--token", self.token_var.get().strip()])
+
+        cmd = [sys.executable, "-m", "agsync.cli", "serve", "--host", "0.0.0.0", "--port", str(port_num)]
         if self.discover_chk_var.get():
             cmd.append("--discover")
 
-        self.log(f"Starting hub server: {' '.join(cmd)}")
+        env = dict(os.environ)
+        tok = self.token_var.get().strip()
+        if tok:
+            env["AGSYNC_TOKEN"] = tok
+
+        log_dir = default_data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        hub_log_path = log_dir / "agsync-panel-hub.log"
+        self._server_log_fh = open(hub_log_path, "a+", encoding="utf-8")
+        self._server_log_fh.seek(0, os.SEEK_END)
+        start_offset = self._server_log_fh.tell()
+
+        self.log(f"Starting hub server on :{port_num} (log: {hub_log_path})")
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self.server_proc = subprocess.Popen(
             cmd,
             cwd=str(ROOT_DIR),
-            stdout=subprocess.PIPE,
+            env=env,
+            stdout=self._server_log_fh,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
             creationflags=flags,
         )
-        self.status_lbl.config(text=f"HOST RUNNING :{port}", bg="#5cb85c")
+        self._job.assign_process(self.server_proc)
+        self.status_lbl.config(text=f"HOST RUNNING :{port_num}", bg="#5cb85c")
         self._apply_mode_ui()
-        threading.Thread(target=self._read_server_output, daemon=True).start()
+        self._tail_stop.clear()
+        threading.Thread(
+            target=self._tail_server_log,
+            args=(hub_log_path, start_offset),
+            daemon=True,
+        ).start()
 
-    def _read_server_output(self) -> None:
+    def _tail_server_log(self, log_path: Path, start_offset: int) -> None:
         proc = self.server_proc
-        if proc is None or proc.stdout is None:
-            return
-        for line in proc.stdout:
-            self.log_queue.put(line)
-        code = proc.wait()
-        self.log(f"Hub server exited with code {code}.")
+        pos = start_offset
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as reader:
+                reader.seek(pos)
+                while not self._tail_stop.is_set():
+                    line = reader.readline()
+                    if line:
+                        self.log_queue.put(line)
+                        continue
+                    if proc is not None and proc.poll() is not None:
+                        rest = reader.read()
+                        if rest:
+                            self.log_queue.put(rest)
+                        break
+                    time.sleep(0.2)
+        except OSError:
+            pass
+        if proc is not None:
+            code = proc.wait()
+            self.log(f"Hub server exited with code {code}.")
+        if self._server_log_fh is not None:
+            try:
+                self._server_log_fh.close()
+            except OSError:
+                pass
+            self._server_log_fh = None
         self.root.after(0, self._apply_mode_ui)
 
     def stop_server(self) -> None:
+        self._tail_stop.set()
         if self.server_proc is not None and self.server_proc.poll() is None:
             self.log("Stopping hub server...")
             self.server_proc.terminate()
+            try:
+                self.server_proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                self.server_proc.kill()
 
     def open_firewall(self) -> None:
-        port = self.port_var.get().strip() or "8765"
+        port_num = self._validated_port()
+        if port_num is None:
+            return
         if os.name != "nt":
             self.log("Firewall helper is for Windows. Ensure TCP/UDP ports are open on your OS.")
             return
+
+        profiles = inspect_windows_network_profiles()
+        public_profiles = [
+            p.get("Name") or p.get("InterfaceAlias") or "unknown"
+            for p in profiles
+            if str(p.get("NetworkCategory", "")).lower() == "public"
+        ]
+        if public_profiles:
+            self.log(
+                f"WARNING: Network profile(s) {public_profiles} are set to Public. "
+                "Switch to Private in Windows Settings so LAN firewall rules work."
+            )
+
         ps_cmd = (
             f"New-NetFirewallRule -DisplayName 'agsync LAN Coordination Hub' "
-            f"-Direction Inbound -Protocol TCP -LocalPort {port} -Profile Private -Action Allow -ErrorAction SilentlyContinue; "
+            f"-Direction Inbound -Protocol TCP -LocalPort {port_num} -Profile Private -Action Allow -ErrorAction SilentlyContinue; "
             f"New-NetFirewallRule -DisplayName 'agsync LAN Discovery' "
-            f"-Direction Inbound -Protocol UDP -LocalPort {DEFAULT_DISCOVERY_PORT} -Profile Private -Action Allow -ErrorAction SilentlyContinue"
+            f"-Direction Inbound -Protocol UDP -LocalPort {int(DEFAULT_DISCOVERY_PORT)} -Profile Private -Action Allow -ErrorAction SilentlyContinue"
         )
-        self.log(f"Requesting Administrator permission to open TCP {port} & UDP {DEFAULT_DISCOVERY_PORT}...")
+        self.log(f"Requesting Administrator permission to open TCP {port_num} & UDP {DEFAULT_DISCOVERY_PORT}...")
         try:
             subprocess.Popen(
                 [
@@ -390,33 +476,56 @@ class AgsyncControlPanel:
             self.log(f"State handoff FAILED: {exc.message}")
 
     def run_diagnostics(self) -> None:
+        port_num = self._validated_port()
+        if port_num is None:
+            return
         self._save_current_config()
-        ip = self.host_ip_var.get().strip()
-        port = self.port_var.get().strip() or "8765"
-        threading.Thread(target=self._diag_worker, args=(ip, port), daemon=True).start()
+        ip = self.host_ip_var.get().strip() or "127.0.0.1"
+        threading.Thread(target=self._diag_worker, args=(ip, port_num), daemon=True).start()
 
-    def _diag_worker(self, ip: str, port: str) -> None:
+    def _diag_worker(self, ip: str, port_num: int) -> None:
         is_host = self.mode_var.get() == "host"
-        self.log(f"--- Diagnostics ({'HOST' if is_host else 'PEER'} -> {ip}:{port}) ---")
-        if not is_host:
-            ok_ping, _ = ping_host(ip)
-            if ok_ping:
-                self.log("[1/2] PING OK: Host IP is reachable on LAN.")
-            else:
-                self.log("[1/2] PING FAILED: Cannot reach Host IP.")
-                self.log("      -> Check: Same Wi-Fi/LAN? VPN 'Allow LAN' / 'Excluded routes' (192.168.1.0/24)?")
-                self.root.after(0, lambda: self.status_lbl.config(text="PING FAILED", bg="#d9534f"))
-                return
+        target_ip = "127.0.0.1" if is_host else ip
+        self.log(f"--- Diagnostics ({'HOST' if is_host else 'PEER'} -> {target_ip}:{port_num}) ---")
 
-        url = f"http://127.0.0.1:{port}" if is_host else f"http://{ip}:{port}"
+        ok_tcp, tcp_msg = tcp_check(target_ip, port_num, timeout=2.5)
+        if ok_tcp:
+            self.log(f"[1/2] TCP CONNECT OK: {tcp_msg}")
+        else:
+            self.log(f"[1/2] TCP CONNECT FAILED ({target_ip}:{port_num}): {tcp_msg}")
+            self.log("      -> Check: 1) Hub Server started? 2) Windows Firewall Private rule open? 3) VPN/Proxy LAN exclusion?")
+            self.root.after(0, lambda: self.status_lbl.config(text="TCP FAILED", bg="#d9534f"))
+            return
+
+        url = f"http://{target_ip}:{port_num}"
         ok_http, msg = check_health(url)
         if ok_http:
             self.log(f"[2/2] HEALTH OK: {msg}")
             self.root.after(0, lambda: self.status_lbl.config(text="CONNECTED", bg="#5cb85c"))
         else:
             self.log(f"[2/2] HEALTH FAILED ({url}/health): {msg}")
-            self.log("      -> Check: 1) Is Hub Server started on Host? 2) Is Windows Firewall TCP 8765 open?")
             self.root.after(0, lambda: self.status_lbl.config(text="HTTP FAILED", bg="#f0ad4e"))
+
+    def run_doctor_ui(self) -> None:
+        self.log("Running agsync doctor...")
+        repo_str = self.repo_var.get().strip() or str(ROOT_DIR)
+        url = (
+            f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
+            if self.mode_var.get() == "host"
+            else self._server_url()
+        )
+        threading.Thread(target=self._doctor_worker, args=(Path(repo_str), url), daemon=True).start()
+
+    def _doctor_worker(self, repo: Path, url: str) -> None:
+        try:
+            report = run_doctor(repo=repo, server_url=url)
+            self.log(f"=== agsync doctor ({'OK' if report['ok'] else 'ISSUES FOUND'}) ===")
+            for chk in report["checks"]:
+                self.log(f"[{chk['status'].upper()}] {chk['name']}: {chk['detail']}")
+                if chk.get("fix"):
+                    self.log(f"       fix: {chk['fix']}")
+        except Exception as exc:
+            self.log(f"Doctor error: {exc}")
 
     def check_status(self) -> None:
         ip = "127.0.0.1" if self.mode_var.get() == "host" else self.host_ip_var.get().strip()
@@ -426,10 +535,11 @@ class AgsyncControlPanel:
 
     def _status_worker(self, url: str) -> None:
         cmd = [sys.executable, "-m", "agsync.cli", "status", "--server", url]
+        env = dict(os.environ)
         tok = self.token_var.get().strip()
         if tok:
-            cmd.extend(["--token", tok])
-        res = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=5)
+            env["AGSYNC_TOKEN"] = tok
+        res = subprocess.run(cmd, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, timeout=5)
         if res.returncode == 0:
             self.log(f"Live Snapshot:\n{res.stdout.strip()}")
         else:
@@ -450,10 +560,11 @@ class AgsyncControlPanel:
 
     def connect_mcp(self) -> None:
         self._save_current_config()
-        url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}" if self.mode_var.get() == "host" else self._server_url()
-        if self.mode_var.get() == "host":
-            # For host, using LAN IP or 127.0.0.1 works locally; prefer 127.0.0.1 so IP changes don't break local Antigravity
-            url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
+        url = (
+            f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
+            if self.mode_var.get() == "host"
+            else self._server_url()
+        )
         try:
             res = configure_antigravity_mcp(
                 server_url=url,
@@ -481,8 +592,22 @@ class AgsyncControlPanel:
             return
         self._save_current_config()
         repo = Path(repo_str)
-        url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}" if self.mode_var.get() == "host" else self._server_url()
+        url = (
+            f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
+            if self.mode_var.get() == "host"
+            else self._server_url()
+        )
         agent = self.agent_var.get().strip() or default_agent_id()
+        tok = self.token_var.get().strip()
+        self.attach_btn.config(state="disabled")
+        self.log(f"Installing repo hooks & templates in {repo}...")
+        threading.Thread(
+            target=self._attach_repo_worker,
+            args=(repo, url, agent, tok),
+            daemon=True,
+        ).start()
+
+    def _attach_repo_worker(self, repo: Path, url: str, agent: str, tok: str) -> None:
         cmd = [
             sys.executable,
             "-m",
@@ -497,17 +622,31 @@ class AgsyncControlPanel:
             "--with-antigravity-hook",
             "--with-templates",
         ]
-        tok = self.token_var.get().strip()
+        env = dict(os.environ)
         if tok:
-            cmd.extend(["--token", tok])
-        res = subprocess.run(cmd, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=10)
-        if res.returncode == 0:
-            self.log(f"Repo hooks & templates installed:\n{res.stdout.strip()}")
-            messagebox.showinfo("Repo Attached", f"Hooks & templates installed in:\n{repo}")
-        else:
-            err = res.stderr.strip() or res.stdout.strip()
-            self.log(f"Repo hook install FAILED: {err}")
-            messagebox.showerror("Repo Setup Failed", err)
+            env["AGSYNC_TOKEN"] = tok
+        try:
+            res = subprocess.run(
+                cmd, cwd=str(ROOT_DIR), env=env, capture_output=True, text=True, timeout=15
+            )
+            ok = res.returncode == 0
+            out = res.stdout.strip()
+            err = res.stderr.strip() or out
+        except Exception as exc:
+            ok = False
+            out = ""
+            err = str(exc)
+
+        def _finish() -> None:
+            self.attach_btn.config(state="normal")
+            if ok:
+                self.log(f"Repo hooks & templates installed:\n{out}")
+                messagebox.showinfo("Repo Attached", f"Hooks & templates installed in:\n{repo}")
+            else:
+                self.log(f"Repo hook install FAILED: {err}")
+                messagebox.showerror("Repo Setup Failed", err)
+
+        self.root.after(0, _finish)
 
     def _on_close(self) -> None:
         self._save_current_config()
@@ -516,6 +655,7 @@ class AgsyncControlPanel:
                 self.stop_server()
             else:
                 return
+        self._job.close()
         self.root.destroy()
 
 
