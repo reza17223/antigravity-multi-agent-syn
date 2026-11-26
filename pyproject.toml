@@ -1,16 +1,23 @@
 [build-system]
-requires = []
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "antigravity-multi-agent-sync"
-version = "0.1.0"
-description = "Zero-dependency LAN coordination server, MCP bridge, CLI, and hooks for two Antigravity agents working across adjacent machines."
+version = "0.3.0"
+description = "Zero-dependency LAN & remote coordination hub, MCP server, multi-IDE hook proxy, CLI, and GUI panel for concurrent AI coding agents."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/reza17223/antigravity-multi-agent-syn"
+Repository = "https://github.com/reza17223/antigravity-multi-agent-syn"
 
 [project.scripts]
 agsync = "agsync.cli:main"
 agsync-mcp = "agsync.mcp_bridge:main"
 agsync-hook-guard = "agsync.hook_guard:main"
+
+[tool.setuptools]
+packages = ["agsync", "agsync.core", "agsync.adapters", "agsync.commands"]

@@ -53,6 +53,12 @@ Any client that speaks **MCP** (Streamable HTTP or Stdio), **HTTP REST**, or **C
 - **Remote Multi-Location Onboarding**: `agsync invite` / `agsync join` (HMAC-signed single-use nonces issuing per-`agent_id` Bearer tokens) + Cloudflare Tunnel (`--protocol http2`) + GUI controls in `scripts/control_panel.py`.
 - **Real-Time Events & Live Dashboard**: SQLite `events` ring buffer (1000 records + `boot_id`), `sync_wait` MCP tool (<=15s `Condition` wait), `GET /events` long-polling, and Live Activity Feed + Browser Notifications in `/dashboard`.
 
+### Phase 3 Capabilities (`v0.3.0`)
+- **Non-Destructive Merge Pre-Check (`agsync merge-check`)**: Runs `git merge-tree --write-tree` without modifying the working tree to detect branch conflicts early.
+- **External Shell Hooks**: User-defined commands in `agsync.config.json` (`hooks.on_lock`, `hooks.on_task_done`, `hooks.pre_merge`).
+- **Explicit Offline Read-Only Mode**: `SyncClient.ping_or_offline()` transitions unreachable clients into `offline_read_only` to block stale lock acquisitions.
+- **Packaging**: Ready for `pip install .` / `uvx` via `pyproject.toml` plus `scripts/build_exe.py` for standalone Windows `.exe` builds.
+
 ---
 
 ## Quickstart
