@@ -53,6 +53,12 @@
 - **اتصال از راه دور و Onboarding یک‌کلیکه**: دستورات `agsync invite` / `agsync join` (امضای HMAC و مصرف اتمیک تک‌بارمصرف + صدور توکن اختصاصی هر `agent_id`)، آداپتور Cloudflare Tunnel (`--protocol http2`) و دکمه‌های مربوطه در `scripts/control_panel.py`.
 - **رویدادهای بلادرنگ و داشبورد زنده**: جدول `events` (Ring Buffer هزارتایی + `boot_id`)، ابزار `sync_wait` در MCP (حداکثر ۱۵ ثانیه با `Condition`)، long-polling روی `GET /events` و نوتیفیکیشن مرورگر در `/dashboard`.
 
+### قابلیت‌های فاز ۳ (`v0.3.0`)
+- **بررسی پیش‌دستانه تداخل گیت (`agsync merge-check`)**: اجرای `git merge-tree --write-tree` بدون دست‌زدن به Working Tree برای کشف زودهنگام تعارض شاخه‌ها.
+- **هوک‌های شل خارجی (`External Shell Hooks`)**: اجرای دستورات دلخواه کاربر از `agsync.config.json` روی رویدادهای `on_lock`، `on_task_done` و `pre_merge`.
+- **مدیریت صریح حالت Offline**: ورود کلاینت به حالت `offline_read_only` هنگام قطع ارتباط با هاب (`ping_or_offline()`) برای جلوگیری از صدور قفل اشتباه.
+- **بسته‌بندی نهایی**: آماده نصب با `pip install .` / `uvx` از طریق `pyproject.toml` و اسکریپت `scripts/build_exe.py` برای ساخت `.exe` ویندوز.
+
 ---
 
 ## شروع سریع
