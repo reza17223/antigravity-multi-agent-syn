@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "agsync": {
+      "command": "python",
+      "args": [
+        "-m",
+        "agsync.mcp_bridge",
+        "--server",
+        "http://192.168.1.10:8765",
+        "--agent",
+        "machine-b"
+      ],
+      "env": {
+        "PYTHONPATH": "C:/Users/YOUR_USER/teamwork_projects/antigravity_multi_agent_sync",
+        "AGSYNC_TOKEN": ""
+      }
+    }
+  }
+}
