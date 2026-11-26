@@ -427,3 +427,19 @@ class SyncClient:
         payload = dict(bundle)
         payload["replace"] = replace
         return self._request("POST", "/state/import", body=payload)
+
+    def create_invite(
+        self, agent_id: str, *, ttl_sec: int = 900, created_by: str = "host"
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/invites",
+            body={"agent_id": agent_id, "ttl_sec": ttl_sec, "created_by": created_by},
+        )
+
+    def join_invite(self, nonce: str, signature: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/join",
+            body={"nonce": nonce, "signature": signature},
+        )

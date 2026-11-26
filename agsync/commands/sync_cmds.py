@@ -269,3 +269,43 @@ def cmd_client_dispatch(args: argparse.Namespace, *, as_json: bool) -> int:
         return 1
 
     return 0
+
+
+def cmd_invite(args: argparse.Namespace, *, as_json: bool) -> int:
+    from urllib.parse import quote
+    server, agent, token = resolve_conn(args)
+    client = SyncClient(server, token=token or None)
+    try:
+        res = client.create_invite(args.target_agent, ttl_sec=args.ttl, created_by=agent)
+        base = (args.base_url or server).rstrip("/")
+        res["join_url"] = (
+            f"{base}/join?nonce={quote(res['nonce'])}&sig={quote(res['signature'])}&agent={quote(res['agent_id'])}"
+        )
+        print_output(res, as_json=as_json)
+        return 0
+    except SyncClientError as exc:
+        sys.stderr.write(f"Error: {exc.message}\n")
+        return 1
+
+
+def cmd_join(args: argparse.Namespace, *, as_json: bool) -> int:
+    from urllib.parse import parse_qs, urlparse
+    raw = str(args.join_url).strip()
+    if raw.startswith(("http://", "https://")):
+        parsed = urlparse(raw)
+        qs = parse_qs(parsed.query)
+        server = f"{parsed.scheme}://{parsed.netloc}"
+        nonce = qs.get("nonce", [""])[0]
+        sig = qs.get("sig", [""])[0]
+    else:
+        server, _, _ = resolve_conn(args)
+        nonce = raw
+        sig = str(args.sig or "")
+    client = SyncClient(server)
+    try:
+        res = client.join_invite(nonce, sig)
+        print_output(res, as_json=as_json)
+        return 0
+    except SyncClientError as exc:
+        sys.stderr.write(f"Error: {exc.message}\n")
+        return 1

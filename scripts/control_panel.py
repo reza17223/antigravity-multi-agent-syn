@@ -195,6 +195,14 @@ class AgsyncControlPanel:
         )
         self.attach_btn.pack(side="left", padx=4)
 
+        r_p2 = ttk.Frame(ag_frame)
+        r_p2.pack(fill="x", padx=6, pady=4)
+        ttk.Label(r_p2, text="Phase 2:").pack(side="left", padx=(0, 6))
+        ttk.Button(r_p2, text="Create Worktree...", command=self.create_worktree_ui).pack(side="left", padx=4)
+        ttk.Button(r_p2, text="Create Join Link...", command=self.create_invite_ui).pack(side="left", padx=4)
+        ttk.Button(r_p2, text="Join Remote Hub...", command=self.join_remote_ui).pack(side="left", padx=4)
+        ttk.Button(r_p2, text="Cloudflare Tunnel", command=self.start_tunnel_ui).pack(side="left", padx=4)
+
         # 4. Live Logs Console
         log_frame = ttk.LabelFrame(self.root, text="Live Logs & Step-by-Step Error Diagnostics")
         log_frame.pack(fill="both", expand=True, **pad)
@@ -657,6 +665,87 @@ class AgsyncControlPanel:
                 return
         self._job.close()
         self.root.destroy()
+
+    def create_worktree_ui(self) -> None:
+        repo_str = self.repo_var.get().strip() or str(ROOT_DIR)
+        aid = simpledialog.askstring("Create Worktree", "Agent ID for new worktree:", parent=self.root)
+        if not aid:
+            return
+        threading.Thread(
+            target=self._worktree_worker, args=(Path(repo_str), aid.strip()), daemon=True
+        ).start()
+
+    def _worktree_worker(self, repo: Path, aid: str) -> None:
+        from agsync.commands.worktree import create_worktree
+        try:
+            res = create_worktree(repo, aid)
+            self.log(f"Worktree created: {res}")
+        except Exception as exc:
+            self.log(f"Worktree error: {exc}")
+
+    def create_invite_ui(self) -> None:
+        aid = simpledialog.askstring("Create Join Link", "Target peer Agent ID:", parent=self.root)
+        if not aid:
+            return
+        base_url = simpledialog.askstring(
+            "Base URL", "Public/LAN Base URL:", initialvalue=self._server_url(), parent=self.root
+        )
+        if not base_url:
+            return
+        threading.Thread(
+            target=self._invite_worker, args=(aid.strip(), base_url.strip()), daemon=True
+        ).start()
+
+    def _invite_worker(self, aid: str, base_url: str) -> None:
+        tok = self.token_var.get().strip() or None
+        local_url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
+        try:
+            res = SyncClient(local_url, token=tok, timeout=5.0).create_invite(aid)
+            from urllib.parse import quote
+            link = (
+                f"{base_url.rstrip('/')}/join?nonce={quote(res['nonce'])}"
+                f"&sig={quote(res['signature'])}&agent={quote(res['agent_id'])}"
+            )
+            self.log(f"Join Link for '{aid}': {link}")
+        except Exception as exc:
+            self.log(f"Create invite failed: {exc}")
+
+    def join_remote_ui(self) -> None:
+        raw = simpledialog.askstring("Join Remote Hub", "Paste Join Link URL:", parent=self.root)
+        if not raw:
+            return
+        threading.Thread(target=self._join_worker, args=(raw.strip(),), daemon=True).start()
+
+    def _join_worker(self, raw_url: str) -> None:
+        from urllib.parse import parse_qs, urlparse
+        try:
+            parsed = urlparse(raw_url)
+            qs = parse_qs(parsed.query)
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            nonce = qs.get("nonce", [""])[0]
+            sig = qs.get("sig", [""])[0]
+            res = SyncClient(base, timeout=8.0).join_invite(nonce, sig)
+            self.root.after(0, lambda: self.host_ip_var.set(parsed.hostname or ""))
+            self.root.after(0, lambda: self.port_var.set(str(parsed.port or (443 if parsed.scheme == "https" else 80))))
+            self.root.after(0, lambda: self.token_var.set(str(res.get("token", ""))))
+            self.root.after(0, lambda: self.agent_var.set(str(res.get("agent_id", ""))))
+            self.log(f"Joined remote hub as '{res.get('agent_id')}' (per-agent token saved).")
+        except Exception as exc:
+            self.log(f"Join remote failed: {exc}")
+
+    def start_tunnel_ui(self) -> None:
+        port = self.port_var.get().strip() or "8765"
+        threading.Thread(
+            target=self._tunnel_worker, args=(f"http://127.0.0.1:{port}",), daemon=True
+        ).start()
+
+    def _tunnel_worker(self, local_url: str) -> None:
+        from agsync.adapters.tunnel import start_cloudflared_tunnel
+        try:
+            proc = start_cloudflared_tunnel(local_url, protocol="http2")
+            self.log(f"Cloudflare Tunnel started (PID={proc.pid}) for {local_url}")
+        except Exception as exc:
+            self.log(f"Cloudflare Tunnel error: {exc}")
 
 
 def main() -> None:

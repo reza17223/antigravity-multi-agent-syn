@@ -30,6 +30,7 @@ from agsync.adapters.network import (
     is_ip_literal,
     is_loopback_host,
 )
+from agsync.core.invites import InviteService
 from agsync.dashboard import DASHBOARD_HTML
 from agsync.db import default_data_dir, default_db_path
 from agsync.discovery import DEFAULT_DISCOVERY_PORT, DiscoveryBeacon
@@ -428,6 +429,8 @@ class CoordinationHTTPServer(ThreadingHTTPServer):
         purge_interval_sec: float = 60.0,
     ) -> None:
         self.store = store
+        self.invites = InviteService(store.db)
+        self.invite_secret = (token.strip() if (token and token.strip()) else None) or secrets.token_urlsafe(24)
         self.token = token.strip() if (token and token.strip()) else None
         self.admin_token = admin_token.strip() if (admin_token and admin_token.strip()) else None
         self.allow_insecure_lan = bool(allow_insecure_lan)
@@ -717,6 +720,8 @@ class CoordinationHandler(BaseHTTPRequestHandler):
             provided = auth[len("Bearer ") :].strip()
             if hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
                 return True
+            if not admin_required and self.server.invites.verify_agent_token(provided) is not None:
+                return True
         self._drain_body()
         self._send_json(
             401,
@@ -945,13 +950,37 @@ class CoordinationHandler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = parse_qs(parsed.query)
         is_state_route = path.startswith("/state/")
+        is_public_join = path in ("/join", "/invites/consume")
 
-        if not self._check_auth(admin_required=is_state_route):
+        if not is_public_join and not self._check_auth(admin_required=is_state_route):
             return
         if not self._require_json_content_type():
             return
 
         body = self._read_json_body()
+
+        if is_public_join:
+            if not isinstance(body, dict):
+                raise ValidationError("validation_error", "JSON object body expected")
+            res = self.server.invites.consume_invite(
+                str(body.get("nonce", "")),
+                str(body.get("signature", "")),
+                secret=self.server.invite_secret,
+            )
+            self._send_json(200, res)
+            return
+
+        if path == "/invites":
+            if not isinstance(body, dict):
+                raise ValidationError("validation_error", "JSON object body expected")
+            res = self.server.invites.create_invite(
+                str(body.get("agent_id", "")),
+                secret=self.server.invite_secret,
+                ttl_sec=int(body.get("ttl_sec", 900)),
+                created_by=str(body.get("created_by", "host")),
+            )
+            self._send_json(201, res)
+            return
 
         if path == "/mcp":
             default_agent = (

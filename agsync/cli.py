@@ -12,6 +12,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agsync.commands.doctor import cmd_doctor
+from agsync.commands.hook_proxy import cmd_hook_proxy
 from agsync.commands.hooks import (
     cmd_guard,
     cmd_install_hooks,
@@ -21,9 +22,12 @@ from agsync.commands.hooks import (
 from agsync.commands.sync_cmds import (
     cmd_client_dispatch,
     cmd_discover,
+    cmd_invite,
+    cmd_join,
     cmd_serve,
     cmd_setup_mcp,
 )
+from agsync.commands.worktree import cmd_worktree
 from agsync.core.git_ops import find_repo_root as _find_repo_root
 from agsync.db import default_db_path
 from agsync.discovery import DEFAULT_DISCOVERY_PORT
@@ -224,6 +228,40 @@ def build_parser() -> argparse.ArgumentParser:
     ps_pull.add_argument("--from-token", default="", help="Optional Bearer token for source hub")
     ps_pull.add_argument("--merge", action="store_true", help="Upsert instead of replacing existing rows")
 
+    # hook-proxy
+    p_hp = sub.add_parser("hook-proxy", parents=[common], help="Multi-IDE PreToolUse hook proxy.")
+    p_hp.add_argument("--host", required=True, choices=["antigravity", "claude", "cursor"])
+    p_hp.add_argument("--record", action="store_true", help="Record payload samples to .agsync/hook-samples/")
+    p_hp.add_argument("--chain", default=None, help="Optional pre-existing user hook command to chain")
+    p_hp.add_argument("--chain-timeout", type=float, default=5.0)
+    p_hp.add_argument("--ask", action="store_true", help="Emit 'ask' instead of 'deny' for Antigravity")
+    p_hp.add_argument("--fail-closed", action="store_true")
+    p_hp.add_argument("--require-lease", action="store_true")
+    p_hp.add_argument("--timeout", type=float, default=2.0)
+
+    # worktree
+    p_wt = sub.add_parser("worktree", parents=[common], help="Opt-in git worktree management.")
+    p_wt.add_argument("--repo", default=".")
+    wt_sub = p_wt.add_subparsers(dest="wt_cmd", required=True)
+    wt_create = wt_sub.add_parser("create", help="Create sibling worktree.")
+    wt_create.add_argument("--agent", required=True, help="Explicit agent_id for .agsync-agent")
+    wt_create.add_argument("--branch", default=None)
+    wt_create.add_argument("--no-link-deps", action="store_true")
+    wt_sub.add_parser("list", parents=[common], help="List git worktrees.")
+    wt_rm = wt_sub.add_parser("remove", parents=[common], help="Remove a git worktree.")
+    wt_rm.add_argument("path", help="Worktree directory path")
+    wt_rm.add_argument("--force", action="store_true")
+
+    # invite & join
+    p_inv = sub.add_parser("invite", parents=[common], help="Create a single-use HMAC Join Link.")
+    p_inv.add_argument("--target-agent", required=True, help="Agent ID for the invited peer")
+    p_inv.add_argument("--ttl", type=int, default=900)
+    p_inv.add_argument("--base-url", default=None, help="Public/tunnel base URL for join link")
+
+    p_join = sub.add_parser("join", parents=[common], help="Consume a Join Link to obtain a per-agent token.")
+    p_join.add_argument("join_url", help="Join URL or nonce")
+    p_join.add_argument("--sig", default=None, help="Signature (if passing raw nonce)")
+
     return parser
 
 
@@ -249,6 +287,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "doctor":
         args.json = as_json
         return cmd_doctor(args)
+    if args.cmd == "hook-proxy":
+        return cmd_hook_proxy(args)
+    if args.cmd == "worktree":
+        args.json = as_json
+        return cmd_worktree(args)
+    if args.cmd == "invite":
+        return cmd_invite(args, as_json=as_json)
+    if args.cmd == "join":
+        return cmd_join(args, as_json=as_json)
 
     return cmd_client_dispatch(args, as_json=as_json)
 
