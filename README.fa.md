@@ -47,6 +47,12 @@
   - خواندن امن فایل‌های UTF-8 BOM / UTF-16 پاورشل و محافظت `.agsync/**`، `.agsync-agent` و `.agents/hooks.json` در برابر ویرایش ایجنت.
 - **عیب‌یاب (`agsync doctor`) و داشبورد زنده**: دستور و دکمه عیب‌یابی محیط/شبکه/هوک + داشبورد وب در `GET /dashboard`.
 
+### قابلیت‌های فاز ۲ (`feat/phase2-multi-ide-remote`)
+- **پراکسی هوک چند-IDE (`agsync hook-proxy --host antigravity|claude|cursor`)**: ترجمه ورودی/خروجی بین Antigravity (`ask`/`deny`)، Claude Code (`tool_name`/`tool_input`، `exit 2` + `stderr`) و Cursor (جلوگیری از اجرای تکراری `.claude/`)، همراه با `--record` و زنجیره‌سازی ایمن هوک قبلی کاربر.
+- **مدیریت `git worktree` (`agsync worktree create|list|remove`)**: ساخت worktree هم‌سطح `../<repo>-wt-<n>` با هویت صریح `.agsync-agent` و اتصال Junction بدون نیاز به Admin برای `node_modules`/`.venv`.
+- **اتصال از راه دور و Onboarding یک‌کلیکه**: دستورات `agsync invite` / `agsync join` (امضای HMAC و مصرف اتمیک تک‌بارمصرف + صدور توکن اختصاصی هر `agent_id`)، آداپتور Cloudflare Tunnel (`--protocol http2`) و دکمه‌های مربوطه در `scripts/control_panel.py`.
+- **رویدادهای بلادرنگ و داشبورد زنده**: جدول `events` (Ring Buffer هزارتایی + `boot_id`)، ابزار `sync_wait` در MCP (حداکثر ۱۵ ثانیه با `Condition`)، long-polling روی `GET /events` و نوتیفیکیشن مرورگر در `/dashboard`.
+
 ---
 
 ## شروع سریع
