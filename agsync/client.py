@@ -48,6 +48,19 @@ class SyncClient:
         self.token = token if (token and token.strip()) else None
         self.timeout = float(timeout)
         self._opener = build_opener_for_url(self.server_url)
+        self.offline_read_only: bool = False
+
+    def ping_or_offline(self) -> bool:
+        """Check hub reachability and update explicit offline_read_only state."""
+        try:
+            self.health()
+            self.offline_read_only = False
+            return True
+        except SyncClientError as exc:
+            if exc.unreachable:
+                self.offline_read_only = True
+                return False
+            raise
 
     def _request(
         self,
@@ -89,6 +102,7 @@ class SyncClient:
                 msg, status_code=exc.code, payload=err_payload, unreachable=False
             ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            self.offline_read_only = True
             raise SyncClientError(
                 f"Cannot reach agsync server at {self.server_url}: {exc}",
                 status_code=None,
@@ -327,6 +341,12 @@ class SyncClient:
         ttl_sec: int = 600,
         reason: str = "",
     ) -> dict[str, Any]:
+        if self.offline_read_only:
+            raise SyncClientError(
+                "Hub is offline; client is in read-only mode",
+                payload={"error": "offline_read_only"},
+                unreachable=True,
+            )
         return self._request(
             "POST",
             "/leases/acquire",

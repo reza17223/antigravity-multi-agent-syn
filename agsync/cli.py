@@ -13,6 +13,7 @@ if __package__ in (None, ""):
 
 from agsync.commands.doctor import cmd_doctor
 from agsync.commands.hook_proxy import cmd_hook_proxy
+from agsync.commands.merge_check import cmd_merge_check
 from agsync.commands.hooks import (
     cmd_guard,
     cmd_install_hooks,
@@ -262,6 +263,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_join.add_argument("join_url", help="Join URL or nonce")
     p_join.add_argument("--sig", default=None, help="Signature (if passing raw nonce)")
 
+    # merge-check
+    p_mc = sub.add_parser("merge-check", parents=[common], help="Check branch merge conflicts via git merge-tree.")
+    p_mc.add_argument("--base", default="main", help="Base branch (default: main)")
+    p_mc.add_argument("--target", default="HEAD", help="Target branch/ref (default: HEAD)")
+    p_mc.add_argument("--repo", default=".")
+
     return parser
 
 
@@ -296,6 +303,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_invite(args, as_json=as_json)
     if args.cmd == "join":
         return cmd_join(args, as_json=as_json)
+    if args.cmd == "merge-check":
+        args.json = as_json
+        return cmd_merge_check(args)
 
     return cmd_client_dispatch(args, as_json=as_json)
 
