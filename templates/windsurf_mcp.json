@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "agsync": {
+      "command": "python",
+      "args": [
+        "-m",
+        "agsync.mcp_bridge",
+        "--server",
+        "http://127.0.0.1:8765",
+        "--agent",
+        "windsurf-agent"
+      ],
+      "env": {
+        "AGSYNC_TOKEN": ""
+      }
+    }
+  }
+}
