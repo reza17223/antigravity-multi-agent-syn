@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -562,6 +563,394 @@ class TestConditionWaitAndHTTPEvents(unittest.TestCase):
         idx_click = html.index('notifyBtn.addEventListener("click"')
         idx_req = html.index("Notification.requestPermission()")
         self.assertGreater(idx_req, idx_click)
+
+
+def _srgb_to_linear(channel: int) -> float:
+    c = channel / 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    r, g, b = rgb
+    return (
+        0.2126 * _srgb_to_linear(r)
+        + 0.7152 * _srgb_to_linear(g)
+        + 0.0722 * _srgb_to_linear(b)
+    )
+
+
+def _contrast_ratio(c1: tuple[int, int, int], c2: tuple[int, int, int]) -> float:
+    l1 = _relative_luminance(c1)
+    l2 = _relative_luminance(c2)
+    return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
+
+
+def _parse_css_color(raw: str, bg: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
+    val = raw.strip()
+    if val.startswith("#"):
+        h = val.lstrip("#")
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    m = re.fullmatch(
+        r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)",
+        val,
+    )
+    if m:
+        assert bg is not None, f"Background required to composite {val}"
+        fg = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        alpha = float(m.group(4))
+        return tuple(round(fg[i] * alpha + bg[i] * (1.0 - alpha)) for i in range(3))  # type: ignore[return-value]
+    raise AssertionError(f"Unsupported CSS color format: {raw!r}")
+
+
+def _extract_css_vars(block: str) -> dict[str, str]:
+    return {
+        m.group(1): m.group(2).strip()
+        for m in re.finditer(r"(--[a-z0-9-]+)\s*:\s*([^;]+);", block)
+    }
+
+
+class TestM1RegressionFixes(unittest.TestCase):
+    def test_wait_for_events_close_race_returns_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # 1. Deterministic close() race between event_cond exit and initial list_events()
+            store1 = SyncStore(Path(tmp) / "race1.db")
+            entered = threading.Event()
+            release = threading.Event()
+            orig_list = store1.events.list_events
+
+            def paused_first_list(*args, **kwargs):
+                entered.set()
+                release.wait(timeout=3.0)
+                return orig_list(*args, **kwargs)
+
+            out1: dict = {}
+            exc1: list[BaseException] = []
+
+            def run_wait1() -> None:
+                try:
+                    out1.update(store1.wait_for_events(since_id=5, timeout_sec=5.0))
+                except BaseException as exc:  # pragma: no cover - regression failure capture
+                    exc1.append(exc)
+
+            with mock.patch.object(store1.events, "list_events", side_effect=paused_first_list):
+                t = threading.Thread(target=run_wait1, daemon=True)
+                t.start()
+                self.assertTrue(entered.wait(timeout=2.0))
+                store1.close()
+                release.set()
+                t.join(timeout=3.0)
+
+            self.assertFalse(t.is_alive())
+            self.assertEqual(exc1, [])
+            self.assertEqual(
+                out1,
+                {
+                    "boot_id": store1.boot_id,
+                    "latest_id": 5,
+                    "reset": False,
+                    "timed_out": True,
+                    "events": [],
+                },
+            )
+            # Normal read_tx/write_tx callers still raise ProgrammingError cleanly on closed DB
+            with self.assertRaises(sqlite3.ProgrammingError):
+                with store1.db.read_tx():
+                    pass
+            with self.assertRaises(sqlite3.ProgrammingError):
+                with store1.db.write_tx():
+                    pass
+
+            # 2. Deterministic close() race on loop list_events() after event_cond wakeup
+            store2 = SyncStore(Path(tmp) / "race2.db")
+            call_count = 0
+            loop_entered = threading.Event()
+            loop_release = threading.Event()
+            orig_list2 = store2.events.list_events
+
+            def paused_second_list(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 2:
+                    loop_entered.set()
+                    loop_release.wait(timeout=3.0)
+                return orig_list2(*args, **kwargs)
+
+            out2: dict = {}
+            exc2: list[BaseException] = []
+
+            def run_wait2() -> None:
+                try:
+                    out2.update(store2.wait_for_events(since_id=0, timeout_sec=5.0))
+                except BaseException as exc:  # pragma: no cover - regression failure capture
+                    exc2.append(exc)
+
+            with mock.patch.object(store2.events, "list_events", side_effect=paused_second_list):
+                t2 = threading.Thread(target=run_wait2, daemon=True)
+                t2.start()
+                time.sleep(0.08)
+                store2.db.notify_events()
+                self.assertTrue(loop_entered.wait(timeout=2.0))
+                store2.close()
+                loop_release.set()
+                t2.join(timeout=3.0)
+
+            self.assertFalse(t2.is_alive())
+            self.assertEqual(exc2, [])
+            self.assertTrue(out2["timed_out"])
+            self.assertEqual(out2["events"], [])
+            self.assertEqual(out2["boot_id"], store2.boot_id)
+
+    def test_dashboard_wcag_aa_contrast_tokens(self) -> None:
+        from agsync.dashboard import DASHBOARD_HTML
+
+        dark_match = re.search(
+            r"@media\s*\(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{(.*?)\}\s*\}",
+            DASHBOARD_HTML,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(dark_match, "Missing dark mode :root token block")
+        assert dark_match is not None
+        html_without_dark = DASHBOARD_HTML.replace(dark_match.group(0), "")
+        light_match = re.search(r":root\s*\{(.*?)\}", html_without_dark, re.DOTALL)
+        self.assertIsNotNone(light_match, "Missing light mode :root token block")
+        assert light_match is not None
+
+        light_vars = _extract_css_vars(light_match.group(1))
+        dark_vars = _extract_css_vars(dark_match.group(1))
+
+        # Verify interactive controls use --control-border
+        ctrl_rule = re.search(r"button,\s*input,\s*select\s*\{(.*?)\}", DASHBOARD_HTML, re.DOTALL)
+        self.assertIsNotNone(ctrl_rule)
+        assert ctrl_rule is not None
+        self.assertIn("var(--control-border)", ctrl_rule.group(1))
+
+        for mode_name, tokens in (("light", light_vars), ("dark", dark_vars)):
+            surface = _parse_css_color(tokens["--surface"])
+            bg = _parse_css_color(tokens["--bg"])
+            text = _parse_css_color(tokens["--text"])
+            muted = _parse_css_color(tokens["--muted"])
+            accent = _parse_css_color(tokens["--accent"])
+            accent_fg = _parse_css_color(tokens["--accent-fg"])
+            ctrl_border = _parse_css_color(tokens["--control-border"])
+
+            # Text contrast >= 4.5:1
+            self.assertGreaterEqual(_contrast_ratio(text, surface), 4.5, f"{mode_name} text/surface")
+            self.assertGreaterEqual(_contrast_ratio(text, bg), 4.5, f"{mode_name} text/bg")
+            self.assertGreaterEqual(_contrast_ratio(muted, surface), 4.5, f"{mode_name} muted/surface")
+            self.assertGreaterEqual(_contrast_ratio(muted, bg), 4.5, f"{mode_name} muted/bg")
+            self.assertGreaterEqual(_contrast_ratio(accent_fg, accent), 4.5, f"{mode_name} accent")
+
+            for sem in ("ok", "warn", "danger", "info"):
+                fg = _parse_css_color(tokens[f"--{sem}"])
+                sem_bg = _parse_css_color(tokens[f"--{sem}-bg"], bg=surface)
+                self.assertGreaterEqual(
+                    _contrast_ratio(fg, sem_bg),
+                    4.5,
+                    f"{mode_name} --{sem} on --{sem}-bg",
+                )
+
+            # Non-text UI control border contrast >= 3.0:1 against both surface and header bg
+            self.assertGreaterEqual(
+                _contrast_ratio(ctrl_border, surface),
+                3.0,
+                f"{mode_name} control-border/surface",
+            )
+            self.assertGreaterEqual(
+                _contrast_ratio(ctrl_border, bg),
+                3.0,
+                f"{mode_name} control-border/bg",
+            )
+
+    def test_dashboard_load_snapshot_preserves_since_id_and_bounds_seen_ids(self) -> None:
+        from agsync.dashboard import DASHBOARD_HTML
+
+        # Pure-Python static verification of loadSnapshot & bounded seenEventIds
+        snap_fn_match = re.search(
+            r"async function loadSnapshot\b.*?\n    \}",
+            DASHBOARD_HTML,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(snap_fn_match)
+        assert snap_fn_match is not None
+        snap_fn = snap_fn_match.group(0)
+        idx_if_seed = snap_fn.index("if (seedEvents)")
+        idx_since = snap_fn.index("sinceId = Math.max(sinceId, snap.latest_event_id)")
+        self.assertGreater(
+            idx_since,
+            idx_if_seed,
+            "loadSnapshot must only advance sinceId when seedEvents is true",
+        )
+        self.assertIn("MAX_SEEN_EVENT_IDS", DASHBOARD_HTML)
+        self.assertIn("seenEventIds.delete(", DASHBOARD_HTML)
+
+        node_bin = shutil.which("node")
+        if not node_bin:
+            return
+
+        # Live Node.js vm execution verifying zero dropped intervening events & bounded seenEventIds
+        script_match = re.search(r"<script>(.*)</script>", DASHBOARD_HTML, re.DOTALL)
+        self.assertIsNotNone(script_match)
+        assert script_match is not None
+        js_src = script_match.group(1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            srv = create_server(
+                host="127.0.0.1",
+                port=0,
+                db_path=Path(tmp) / "dash_js.db",
+                token="dash-secret",
+            )
+            port = srv.server_address[1]
+            base_url = f"http://127.0.0.1:{port}"
+            th = threading.Thread(
+                target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+            )
+            th.start()
+            try:
+                node_harness = """
+const vm = require("vm");
+const baseUrl = process.argv[1];
+const jsSrc = fs_read();
+function fs_read() {
+  return require("fs").readFileSync(0, "utf8");
+}
+
+function makeEl(id) {
+  return {
+    id,
+    value: id === "feed-filter" ? "all" : (id === "token-input" ? "dash-secret" : ""),
+    textContent: "",
+    innerHTML: "",
+    disabled: false,
+    style: {},
+    _listeners: {},
+    _attrs: {},
+    classList: {
+      _set: new Set(),
+      add(c) { this._set.add(c); },
+      remove(c) { this._set.delete(c); },
+      toggle(c, f) { if (f) this._set.add(c); else this._set.delete(c); },
+    },
+    addEventListener(ev, fn) { this._listeners[ev] = fn; },
+    setAttribute(k, v) { this._attrs[k] = v; },
+  };
+}
+
+const els = {};
+const getEl = id => (els[id] || (els[id] = makeEl(id)));
+const notifications = [];
+class FakeNotification {
+  constructor(title, opts) { notifications.push({ title, opts }); }
+  static permission = "granted";
+  static async requestPermission() { return "granted"; }
+}
+
+let snapshotCalls = 0;
+let notifiedMidSnapshot = false;
+async function wrappedFetch(url, opts) {
+  const full = url.startsWith("http") ? url : (baseUrl + url);
+  if (url.startsWith("/snapshot")) {
+    snapshotCalls += 1;
+    if (snapshotCalls === 2 && !notifiedMidSnapshot) {
+      notifiedMidSnapshot = true;
+      await fetch(baseUrl + "/context/ev2_during_snapshot", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer dash-secret",
+        },
+        body: JSON.stringify({ value: 2, updated_by: "agent-a" }),
+      });
+    }
+  }
+  return fetch(full, opts);
+}
+
+const ctx = {
+  document: { getElementById: getEl },
+  window: { addEventListener() {} },
+  sessionStorage: { getItem() { return ""; }, setItem() {} },
+  Notification: FakeNotification,
+  fetch: wrappedFetch,
+  AbortController,
+  URLSearchParams,
+  setTimeout,
+  clearTimeout,
+  Date,
+  Math,
+  Number,
+  String,
+  Array,
+  Set,
+};
+
+vm.runInNewContext(
+  jsSrc + "\\nthis.__state = () => ({ sinceId, feedItems, seenSize: seenEventIds.size, MAX_SEEN_EVENT_IDS, appendFeedEvents, seedFeed });",
+  ctx
+);
+
+(async () => {
+  await els["notify-btn"]._listeners.click();
+  await new Promise(r => setTimeout(r, 150));
+  await fetch(baseUrl + "/context/ev1_wake", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer dash-secret" },
+    body: JSON.stringify({ value: 1, updated_by: "agent-a" }),
+  });
+  await new Promise(r => setTimeout(r, 200));
+  await fetch(baseUrl + "/context/ev3_after", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer dash-secret" },
+    body: JSON.stringify({ value: 3, updated_by: "agent-a" }),
+  });
+  await new Promise(r => setTimeout(r, 200));
+  vm.runInContext("abortLongPoll(); liveEnabled = false;", ctx);
+  const st = ctx.__state();
+  const ids = st.feedItems.map(e => e.id);
+  const targets = st.feedItems.map(e => e.target_id);
+
+  // Verify seenEventIds stays bounded under sustained stream
+  const batch = [];
+  for (let i = 100; i < 800; i++) {
+    batch.push({ id: i, event_type: "context_updated", actor_id: "a", target_id: "k" + i, summary: "s", created_at: 1 });
+  }
+  st.appendFeedEvents(batch);
+  const afterSt = ctx.__state();
+
+  console.log(JSON.stringify({
+    snapshotCalls,
+    ids,
+    targets,
+    notifCount: notifications.length,
+    seenSize: afterSt.seenSize,
+    maxSeen: afterSt.MAX_SEEN_EVENT_IDS,
+    feedLen: afterSt.feedItems.length,
+  }));
+})();
+"""
+                proc = subprocess.run(
+                    [node_bin, "-e", node_harness, base_url],
+                    input=js_src,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=15.0,
+                )
+                self.assertEqual(proc.returncode, 0, f"Node harness failed: {proc.stderr}")
+                res = json.loads(proc.stdout.strip().splitlines()[-1])
+                self.assertEqual(res["ids"], [1, 2, 3])
+                self.assertEqual(
+                    res["targets"],
+                    ["ev1_wake", "ev2_during_snapshot", "ev3_after"],
+                )
+                self.assertEqual(res["notifCount"], 3)
+                self.assertLessEqual(res["seenSize"], res["maxSeen"])
+                self.assertEqual(res["feedLen"], 100)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+                srv.store.close()
+                th.join(timeout=2.0)
 
 
 if __name__ == "__main__":

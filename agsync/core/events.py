@@ -286,6 +286,12 @@ class EventService:
         event_types: list[str] | None = None,
         agent_id: str | None = None,
     ) -> dict[str, Any]:
+        if isinstance(since_id, bool):
+            raise ValidationError("validation_error", "since_id must be a non-negative integer")
+        since = int(since_id)
+        if since < 0:
+            raise ValidationError("validation_error", "since_id must be >= 0")
+
         if isinstance(timeout_sec, bool):
             raise ValidationError("validation_error", "timeout_sec must be a number")
         wait_val = float(timeout_sec)
@@ -294,28 +300,36 @@ class EventService:
         wait = min(wait_val, MAX_SYNC_WAIT_SEC)
         deadline = time.monotonic() + wait
 
+        def _closed_response(prev: dict[str, Any] | None) -> dict[str, Any]:
+            if prev is not None:
+                return {**prev, "timed_out": True}
+            return {
+                "boot_id": self.db.boot_id,
+                "latest_id": since,
+                "reset": False,
+                "timed_out": True,
+                "events": [],
+            }
+
         last_res: dict[str, Any] | None = None
         while True:
             with self.db.event_cond:
                 if self.db._closed:
-                    if last_res is not None:
-                        return {**last_res, "timed_out": True}
-                    return {
-                        "boot_id": self.db.boot_id,
-                        "latest_id": 0,
-                        "reset": False,
-                        "timed_out": True,
-                        "events": [],
-                    }
+                    return _closed_response(last_res)
                 seen_seq = self.db._event_seq
 
-            res = self.list_events(
-                since_id=since_id,
-                boot_id=boot_id,
-                limit=limit,
-                event_types=event_types,
-                agent_id=agent_id,
-            )
+            try:
+                res = self.list_events(
+                    since_id=since,
+                    boot_id=boot_id,
+                    limit=limit,
+                    event_types=event_types,
+                    agent_id=agent_id,
+                )
+            except sqlite3.ProgrammingError:
+                if self.db._closed:
+                    return _closed_response(last_res)
+                raise
             last_res = res
             if res["reset"] or res["events"]:
                 return {**res, "timed_out": False}

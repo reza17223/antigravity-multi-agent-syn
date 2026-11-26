@@ -196,6 +196,7 @@ class SyncDatabase:
     def close(self) -> None:
         self.wake_waiters(closing=True)
         with self.lock:
+            self._closed = True
             self.conn.close()
 
     def _init_db(self) -> None:
@@ -223,6 +224,8 @@ class SyncDatabase:
     def read_tx(self) -> Iterator[None]:
         """Run a consistent deferred read transaction without acquiring a write lock."""
         with self.lock:
+            if self._closed:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
             if self.conn.in_transaction:
                 try:
                     self.conn.execute("ROLLBACK;")
@@ -232,7 +235,7 @@ class SyncDatabase:
             try:
                 yield
             finally:
-                if self.conn.in_transaction:
+                if not self._closed and self.conn.in_transaction:
                     try:
                         self.conn.execute("ROLLBACK;")
                     except sqlite3.Error:
@@ -242,6 +245,8 @@ class SyncDatabase:
     def write_tx(self) -> Iterator[None]:
         """Run an immediate write transaction with safe rollback if COMMIT fails."""
         with self.lock:
+            if self._closed:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
             if self.conn.in_transaction:
                 try:
                     self.conn.execute("ROLLBACK;")
@@ -252,7 +257,7 @@ class SyncDatabase:
                 yield
                 self.conn.execute("COMMIT;")
             except Exception:
-                if self.conn.in_transaction:
+                if not self._closed and self.conn.in_transaction:
                     try:
                         self.conn.execute("ROLLBACK;")
                     except sqlite3.Error:
@@ -271,6 +276,8 @@ class SyncDatabase:
         dest = Path(backup_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
         with self.lock:
+            if self._closed:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
             dst_conn = sqlite3.connect(str(dest), timeout=30.0)
             try:
                 self.conn.backup(dst_conn)

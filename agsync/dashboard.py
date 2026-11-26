@@ -10,10 +10,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <title>agsync Live Coordination Dashboard</title>
   <style>
     :root {
+      color-scheme: light dark;
       --bg: #f6f8fa;
       --surface: #ffffff;
       --surface-alt: #f0f3f6;
       --border: #d0d7de;
+      --control-border: #76808a;
       --text: #1f2328;
       --muted: #59636e;
       --accent: #0969da;
@@ -34,6 +36,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         --surface: #161b22;
         --surface-alt: #21262d;
         --border: #30363d;
+        --control-border: #6e7681;
         --text: #e6edf3;
         --muted: #8b949e;
         --accent: #1f6feb;
@@ -42,7 +45,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         --ok-bg: rgba(46, 160, 67, 0.15);
         --warn: #d29922;
         --warn-bg: rgba(187, 128, 9, 0.15);
-        --danger: #f85149;
+        --danger: #ff7b72;
         --danger-bg: rgba(248, 81, 73, 0.15);
         --info: #79c0ff;
         --info-bg: rgba(56, 139, 253, 0.15);
@@ -77,7 +80,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font: inherit;
       font-size: 14px;
       border-radius: 6px;
-      border: 1px solid var(--border);
+      border: 1px solid var(--control-border);
       padding: 8px 12px;
       background: var(--surface);
       color: var(--text);
@@ -307,6 +310,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     const feedFilter = document.getElementById("feed-filter");
     const errBanner = document.getElementById("error-banner");
 
+    const MAX_FEED_ITEMS = 100;
+    const MAX_SEEN_EVENT_IDS = 500;
     let liveEnabled = true;
     let notifyEnabled = false;
     let currentBootId = "";
@@ -364,19 +369,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       return true;
     }
 
+    function trackSeenEventId(id) {
+      if (seenEventIds.has(id)) return false;
+      seenEventIds.add(id);
+      while (seenEventIds.size > MAX_SEEN_EVENT_IDS) {
+        const oldest = seenEventIds.values().next().value;
+        seenEventIds.delete(oldest);
+      }
+      return true;
+    }
+
     function seedFeed(events) {
       feedItems = [];
       seenEventIds.clear();
       const list = Array.isArray(events) ? events : [];
       for (const ev of list) {
         if (!ev || typeof ev.id !== "number") continue;
-        if (!seenEventIds.has(ev.id)) {
-          seenEventIds.add(ev.id);
+        if (trackSeenEventId(ev.id)) {
           feedItems.push(ev);
         }
       }
-      if (feedItems.length > 100) {
-        feedItems = feedItems.slice(feedItems.length - 100);
+      if (feedItems.length > MAX_FEED_ITEMS) {
+        feedItems = feedItems.slice(feedItems.length - MAX_FEED_ITEMS);
       }
       renderFeed();
     }
@@ -386,14 +400,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const list = Array.isArray(events) ? events : [];
       for (const ev of list) {
         if (!ev || typeof ev.id !== "number") continue;
-        if (!seenEventIds.has(ev.id)) {
-          seenEventIds.add(ev.id);
+        if (trackSeenEventId(ev.id)) {
           feedItems.push(ev);
           added.push(ev);
         }
       }
-      if (feedItems.length > 100) {
-        feedItems = feedItems.slice(feedItems.length - 100);
+      if (feedItems.length > MAX_FEED_ITEMS) {
+        feedItems = feedItems.slice(feedItems.length - MAX_FEED_ITEMS);
       }
       if (added.length > 0) {
         renderFeed();
@@ -488,15 +501,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
         showErr("");
         const snap = await sRes.json();
-        if (snap.boot_id) currentBootId = String(snap.boot_id);
-        if (typeof snap.latest_event_id === "number") {
-          sinceId = Math.max(sinceId, snap.latest_event_id);
-        }
         renderAgents(snap.agents || []);
         renderLeases(snap.active_leases || []);
         renderTasks(snap.tasks || []);
         renderContext(snap.context_keys || []);
         if (seedEvents) {
+          if (snap.boot_id) currentBootId = String(snap.boot_id);
+          if (typeof snap.latest_event_id === "number") {
+            sinceId = Math.max(sinceId, snap.latest_event_id);
+          }
           if (Array.isArray(snap.latest_events)) {
             seedFeed(snap.latest_events);
           } else {
@@ -508,6 +521,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               seedFeed(evData.events || []);
             }
           }
+        } else if (!currentBootId && snap.boot_id) {
+          currentBootId = String(snap.boot_id);
         }
         return true;
       } catch (err) {
