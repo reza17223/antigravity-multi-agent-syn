@@ -10,20 +10,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <title>agsync Live Coordination Dashboard</title>
   <style>
     :root {
+      color-scheme: light dark;
       --bg: #f6f8fa;
       --surface: #ffffff;
       --surface-alt: #f0f3f6;
       --border: #d0d7de;
+      --control-border: #76808a;
       --text: #1f2328;
       --muted: #59636e;
       --accent: #0969da;
       --accent-fg: #ffffff;
-      --ok: #1a7f37;
+      --ok: #116329;
       --ok-bg: #dafbe1;
       --warn: #9a6700;
       --warn-bg: #fff8c5;
       --danger: #cf222e;
       --danger-bg: #ffebe9;
+      --info: #0550ae;
+      --info-bg: #ddf4ff;
       --focus: #0969da;
     }
     @media (prefers-color-scheme: dark) {
@@ -32,16 +36,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         --surface: #161b22;
         --surface-alt: #21262d;
         --border: #30363d;
+        --control-border: #6e7681;
         --text: #e6edf3;
         --muted: #8b949e;
-        --accent: #2f81f7;
+        --accent: #1f6feb;
         --accent-fg: #ffffff;
         --ok: #3fb950;
         --ok-bg: rgba(46, 160, 67, 0.15);
         --warn: #d29922;
         --warn-bg: rgba(187, 128, 9, 0.15);
-        --danger: #f85149;
+        --danger: #ff7b72;
         --danger-bg: rgba(248, 81, 73, 0.15);
+        --info: #79c0ff;
+        --info-bg: rgba(56, 139, 253, 0.15);
         --focus: #58a6ff;
       }
     }
@@ -54,7 +61,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-size: 16px;
       line-height: 1.5;
     }
-    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+    .wrap { max-width: 1240px; margin: 0 auto; padding: 24px 16px; }
     header {
       display: flex;
       flex-wrap: wrap;
@@ -67,24 +74,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
     .brand { display: flex; align-items: center; gap: 12px; }
     .brand h1 { font-size: 20px; margin: 0; line-height: 1.2; }
-    .subtitle { color: var(--muted); font-size: 14px; margin: 0; }
+    .subtitle { color: var(--muted); font-size: 14px; margin: 4px 0 0 0; }
     .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-    button, input {
+    button, input, select {
       font: inherit;
       font-size: 14px;
       border-radius: 6px;
-      border: 1px solid var(--border);
+      border: 1px solid var(--control-border);
       padding: 8px 12px;
       background: var(--surface);
       color: var(--text);
-      min-height: 36px;
+      min-height: 44px;
+      transition: background-color 150ms ease, border-color 150ms ease, opacity 150ms ease;
     }
-    button { cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+    button {
+      cursor: pointer;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
     button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
-    button:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+    button.active { background: var(--info-bg); color: var(--info); border-color: var(--info); }
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 2px;
+    }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
       gap: 16px;
       margin-bottom: 16px;
     }
@@ -93,14 +112,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 16px;
+      min-width: 0;
     }
-    .card h2 {
-      font-size: 16px;
-      margin: 0 0 12px 0;
+    .card-header {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      margin-bottom: 12px;
+    }
+    .card h2 {
+      font-size: 16px;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-tools label {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
     }
     .badge {
       display: inline-flex;
@@ -111,10 +148,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-size: 12px;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
     .badge.ok { background: var(--ok-bg); color: var(--ok); }
     .badge.warn { background: var(--warn-bg); color: var(--warn); }
     .badge.danger { background: var(--danger-bg); color: var(--danger); }
+    .badge.info { background: var(--info-bg); color: var(--info); }
+    .table-wrap {
+      overflow-x: auto;
+      max-width: 100%;
+    }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td {
       text-align: left;
@@ -122,7 +165,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border-bottom: 1px solid var(--border);
       vertical-align: top;
     }
-    th { color: var(--muted); font-weight: 600; }
+    th { color: var(--muted); font-weight: 600; white-space: nowrap; }
     code {
       font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
       font-size: 13px;
@@ -144,13 +187,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       position: absolute; width: 1px; height: 1px; overflow: hidden;
       clip: rect(0, 0, 0, 0); white-space: nowrap;
     }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
       <div class="brand">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="6" cy="6" r="3"></circle>
           <circle cx="18" cy="6" r="3"></circle>
           <circle cx="12" cy="18" r="3"></circle>
@@ -158,14 +209,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </svg>
         <div>
           <h1>agsync Coordination Hub</h1>
-          <p class="subtitle" id="hub-meta">Connecting...</p>
+          <p class="subtitle" id="hub-meta" role="status" aria-atomic="true">Connecting...</p>
         </div>
       </div>
       <div class="controls">
         <label for="token-input" class="sr-only">Bearer token (optional)</label>
         <input id="token-input" type="password" placeholder="Bearer token (if enabled)" aria-label="Bearer token">
-        <button id="refresh-btn" class="primary" type="button">Refresh Now</button>
-        <button id="auto-btn" type="button" aria-pressed="true">Auto: ON (3s)</button>
+        <button id="refresh-btn" class="primary" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+            <polyline points="21 3 21 9 15 9"></polyline>
+          </svg>
+          <span>Refresh Now</span>
+        </button>
+        <button id="auto-btn" class="active" type="button" aria-pressed="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <polyline points="12 7 12 12 15 14"></polyline>
+          </svg>
+          <span id="auto-label">Live: ON</span>
+        </button>
+        <button id="notify-btn" type="button" aria-pressed="false">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+          <span id="notify-label">Alerts: OFF</span>
+        </button>
       </div>
     </header>
 
@@ -174,27 +244,59 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <main>
       <div class="grid">
         <section class="card" aria-labelledby="agents-heading">
-          <h2 id="agents-heading">Connected Agents <span class="badge ok" id="agents-count">0</span></h2>
+          <div class="card-header">
+            <h2 id="agents-heading">Connected Agents <span class="badge ok" id="agents-count">0</span></h2>
+          </div>
           <div id="agents-body"></div>
         </section>
 
         <section class="card" aria-labelledby="leases-heading">
-          <h2 id="leases-heading">Active File &amp; Scope Leases <span class="badge warn" id="leases-count">0</span></h2>
+          <div class="card-header">
+            <h2 id="leases-heading">Active File &amp; Scope Leases <span class="badge warn" id="leases-count">0</span></h2>
+          </div>
           <div id="leases-body"></div>
         </section>
       </div>
 
       <div class="grid">
         <section class="card" aria-labelledby="tasks-heading">
-          <h2 id="tasks-heading">Shared Task Board <span class="badge ok" id="tasks-count">0</span></h2>
+          <div class="card-header">
+            <h2 id="tasks-heading">Shared Task Board <span class="badge ok" id="tasks-count">0</span></h2>
+          </div>
           <div id="tasks-body"></div>
         </section>
 
         <section class="card" aria-labelledby="context-heading">
-          <h2 id="context-heading">Shared Context Keys <span class="badge ok" id="context-count">0</span></h2>
+          <div class="card-header">
+            <h2 id="context-heading">Shared Context Keys <span class="badge info" id="context-count">0</span></h2>
+          </div>
           <div id="context-body"></div>
         </section>
       </div>
+
+      <section class="card" aria-labelledby="feed-heading">
+        <div class="card-header">
+          <h2 id="feed-heading">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+            <span>Live Activity Feed</span>
+            <span class="badge info" id="feed-count">0</span>
+          </h2>
+          <div class="card-tools">
+            <label for="feed-filter">Filter</label>
+            <select id="feed-filter">
+              <option value="all">All events</option>
+              <option value="lease">Leases</option>
+              <option value="task">Tasks</option>
+              <option value="message">Messages</option>
+              <option value="agent">Agents</option>
+              <option value="context">Context</option>
+            </select>
+          </div>
+        </div>
+        <div id="feed-body"></div>
+      </section>
     </main>
   </div>
 
@@ -202,15 +304,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     const tokenInput = document.getElementById("token-input");
     const refreshBtn = document.getElementById("refresh-btn");
     const autoBtn = document.getElementById("auto-btn");
+    const autoLabel = document.getElementById("auto-label");
+    const notifyBtn = document.getElementById("notify-btn");
+    const notifyLabel = document.getElementById("notify-label");
+    const feedFilter = document.getElementById("feed-filter");
     const errBanner = document.getElementById("error-banner");
-    let autoRefresh = true;
+
+    const MAX_FEED_ITEMS = 100;
+    const MAX_SEEN_EVENT_IDS = 500;
+    let liveEnabled = true;
+    let notifyEnabled = false;
+    let currentBootId = "";
+    let sinceId = 0;
+    let pollAbortCtrl = null;
+    let pollLoopSeq = 0;
+    let feedItems = [];
+    const seenEventIds = new Set();
 
     const savedTok = sessionStorage.getItem("agsync_token") || "";
     if (savedTok) tokenInput.value = savedTok;
-    tokenInput.addEventListener("change", () => {
-      sessionStorage.setItem("agsync_token", tokenInput.value.trim());
-      loadState();
-    });
+
+    function getAuthHeaders() {
+      const headers = {};
+      const tok = tokenInput.value.trim();
+      if (tok) headers["Authorization"] = "Bearer " + tok;
+      return headers;
+    }
 
     function esc(v) {
       return String(v ?? "").replace(/[&<>"']/g, c => ({
@@ -224,26 +343,161 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       errBanner.textContent = msg;
     }
 
-    async function loadState() {
-      const headers = {};
-      const tok = tokenInput.value.trim();
-      if (tok) headers["Authorization"] = "Bearer " + tok;
+    function formatTime(ts) {
+      if (!ts) return "-";
+      const d = new Date(Number(ts) * 1000);
+      if (Number.isNaN(d.getTime())) return "-";
+      return d.toLocaleTimeString([], { hour12: false });
+    }
+
+    function eventBadgeClass(evType) {
+      const t = String(evType || "");
+      if (t.includes("expired") || t.includes("released")) return "warn";
+      if (t.includes("acquired") || t.includes("created") || t.includes("registered")) return "ok";
+      if (t.includes("conflict") || t.includes("blocked")) return "danger";
+      return "info";
+    }
+
+    function matchesFeedFilter(evType, filterVal) {
+      if (filterVal === "all") return true;
+      const t = String(evType || "");
+      if (filterVal === "lease") return t.startsWith("lease_");
+      if (filterVal === "task") return t.startsWith("task_");
+      if (filterVal === "message") return t.startsWith("message");
+      if (filterVal === "agent") return t.startsWith("agent_");
+      if (filterVal === "context") return t.startsWith("context_");
+      return true;
+    }
+
+    function trackSeenEventId(id) {
+      if (seenEventIds.has(id)) return false;
+      seenEventIds.add(id);
+      while (seenEventIds.size > MAX_SEEN_EVENT_IDS) {
+        const oldest = seenEventIds.values().next().value;
+        seenEventIds.delete(oldest);
+      }
+      return true;
+    }
+
+    function seedFeed(events) {
+      feedItems = [];
+      seenEventIds.clear();
+      const list = Array.isArray(events) ? events : [];
+      for (const ev of list) {
+        if (!ev || typeof ev.id !== "number") continue;
+        if (trackSeenEventId(ev.id)) {
+          feedItems.push(ev);
+        }
+      }
+      if (feedItems.length > MAX_FEED_ITEMS) {
+        feedItems = feedItems.slice(feedItems.length - MAX_FEED_ITEMS);
+      }
+      renderFeed();
+    }
+
+    function appendFeedEvents(events) {
+      const added = [];
+      const list = Array.isArray(events) ? events : [];
+      for (const ev of list) {
+        if (!ev || typeof ev.id !== "number") continue;
+        if (trackSeenEventId(ev.id)) {
+          feedItems.push(ev);
+          added.push(ev);
+        }
+      }
+      if (feedItems.length > MAX_FEED_ITEMS) {
+        feedItems = feedItems.slice(feedItems.length - MAX_FEED_ITEMS);
+      }
+      if (added.length > 0) {
+        renderFeed();
+      }
+      return added;
+    }
+
+    function renderFeed() {
+      const filterVal = feedFilter.value || "all";
+      const visible = feedItems
+        .filter(ev => matchesFeedFilter(ev.event_type, filterVal))
+        .slice()
+        .reverse();
+      document.getElementById("feed-count").textContent = String(visible.length);
+      const el = document.getElementById("feed-body");
+      if (!visible.length) {
+        el.innerHTML = '<p class="empty">No matching coordination events yet.</p>';
+        return;
+      }
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Target</th><th>Summary</th></tr></thead><tbody>' +
+        visible.map(ev => `<tr>
+          <td><code>${esc(formatTime(ev.created_at))}</code></td>
+          <td><span class="badge ${eventBadgeClass(ev.event_type)}">${esc(ev.event_type)}</span></td>
+          <td><code>${esc(ev.actor_id || "-")}</code></td>
+          <td><code>${esc(ev.target_id || "-")}</code></td>
+          <td>${esc(ev.summary || "-")}</td>
+        </tr>`).join("") + "</tbody></table></div>";
+    }
+
+    function syncNotifyButton() {
+      if (typeof Notification === "undefined") {
+        notifyEnabled = false;
+        notifyBtn.disabled = true;
+        notifyBtn.classList.remove("active");
+        notifyBtn.setAttribute("aria-pressed", "false");
+        notifyLabel.textContent = "Alerts: Unsupported";
+        return;
+      }
+      if (Notification.permission === "denied") {
+        notifyEnabled = false;
+        notifyBtn.disabled = false;
+        notifyBtn.classList.remove("active");
+        notifyBtn.setAttribute("aria-pressed", "false");
+        notifyLabel.textContent = "Alerts: Blocked";
+        return;
+      }
+      if (notifyEnabled && Notification.permission === "granted") {
+        notifyBtn.classList.add("active");
+        notifyBtn.setAttribute("aria-pressed", "true");
+        notifyLabel.textContent = "Alerts: ON";
+      } else {
+        notifyEnabled = false;
+        notifyBtn.classList.remove("active");
+        notifyBtn.setAttribute("aria-pressed", "false");
+        notifyLabel.textContent = "Alerts: OFF";
+      }
+    }
+
+    function dispatchBrowserNotifications(newEvents) {
+      if (!notifyEnabled || typeof Notification === "undefined") return;
+      if (Notification.permission !== "granted") return;
+      for (const ev of newEvents.slice(-3)) {
+        const title = "agsync: " + String(ev.event_type || "event");
+        const body = String(ev.summary || (ev.actor_id + " -> " + ev.target_id));
+        try {
+          new Notification(title, { body, tag: "agsync-ev-" + String(ev.id) });
+        } catch (_err) {
+          // Ignore browser Notification runtime restrictions
+        }
+      }
+    }
+
+    async function loadSnapshot({ seedEvents = false } = {}) {
+      const headers = getAuthHeaders();
       try {
         const [hRes, sRes] = await Promise.all([
           fetch("/health"),
           fetch("/snapshot", { headers })
         ]);
         const health = await hRes.json();
+        const bootShort = health.boot_id ? (" | Boot: " + health.boot_id.slice(0, 8)) : "";
         document.getElementById("hub-meta").textContent =
-          `v${health.version} • Online: ${health.online_agents} • Leases: ${health.active_leases} • Tasks: ${health.tasks_count}`;
+          `v${health.version}${bootShort} | Online: ${health.online_agents} | Leases: ${health.active_leases} | Tasks: ${health.tasks_count}`;
 
         if (sRes.status === 401) {
           showErr("Authentication required: enter the hub Bearer token above.");
-          return;
+          return false;
         }
         if (!sRes.ok) {
           showErr("Failed to load snapshot (" + sRes.status + ").");
-          return;
+          return false;
         }
         showErr("");
         const snap = await sRes.json();
@@ -251,8 +505,113 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         renderLeases(snap.active_leases || []);
         renderTasks(snap.tasks || []);
         renderContext(snap.context_keys || []);
+        if (seedEvents) {
+          if (snap.boot_id) currentBootId = String(snap.boot_id);
+          if (typeof snap.latest_event_id === "number") {
+            sinceId = Math.max(sinceId, snap.latest_event_id);
+          }
+          if (Array.isArray(snap.latest_events)) {
+            seedFeed(snap.latest_events);
+          } else {
+            const evRes = await fetch("/events?since_id=0&limit=30&wait=0", { headers });
+            if (evRes.ok) {
+              const evData = await evRes.json();
+              if (evData.boot_id) currentBootId = String(evData.boot_id);
+              if (typeof evData.latest_id === "number") sinceId = evData.latest_id;
+              seedFeed(evData.events || []);
+            }
+          }
+        } else if (!currentBootId && snap.boot_id) {
+          currentBootId = String(snap.boot_id);
+        }
+        return true;
       } catch (err) {
         showErr("Hub unreachable: " + err.message);
+        return false;
+      }
+    }
+
+    function abortLongPoll() {
+      if (pollAbortCtrl) {
+        pollAbortCtrl.abort();
+        pollAbortCtrl = null;
+      }
+    }
+
+    function sleepAbortable(ms, signal) {
+      return new Promise(resolve => {
+        if (signal && signal.aborted) { resolve(); return; }
+        const timer = setTimeout(resolve, ms);
+        if (signal) {
+          signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+        }
+      });
+    }
+
+    async function startLongPollLoop() {
+      abortLongPoll();
+      if (!liveEnabled) return;
+      const mySeq = ++pollLoopSeq;
+
+      while (liveEnabled && mySeq === pollLoopSeq) {
+        const ctrl = new AbortController();
+        pollAbortCtrl = ctrl;
+        try {
+          const qs = new URLSearchParams({
+            since_id: String(sinceId),
+            wait: "15",
+            limit: "100"
+          });
+          if (currentBootId) qs.set("boot_id", currentBootId);
+          const res = await fetch("/events?" + qs.toString(), {
+            headers: getAuthHeaders(),
+            signal: ctrl.signal
+          });
+          if (mySeq !== pollLoopSeq || !liveEnabled) break;
+          if (res.status === 401) {
+            showErr("Authentication required: enter the hub Bearer token above.");
+            break;
+          }
+          if (!res.ok) {
+            showErr("Event stream error (" + res.status + "). Retrying...");
+            await sleepAbortable(2000, ctrl.signal);
+            continue;
+          }
+          showErr("");
+          const data = await res.json();
+          if (data.reset) {
+            if (data.boot_id) currentBootId = String(data.boot_id);
+            sinceId = typeof data.latest_id === "number" ? data.latest_id : 0;
+            seedFeed(data.events || []);
+            await loadSnapshot({ seedEvents: false });
+          } else {
+            if (data.boot_id) currentBootId = String(data.boot_id);
+            if (typeof data.latest_id === "number") {
+              sinceId = Math.max(sinceId, data.latest_id);
+            }
+            const added = appendFeedEvents(data.events || []);
+            if (added.length > 0) {
+              dispatchBrowserNotifications(added);
+              await loadSnapshot({ seedEvents: false });
+            }
+          }
+        } catch (err) {
+          if (err && err.name === "AbortError") break;
+          if (mySeq !== pollLoopSeq || !liveEnabled) break;
+          showErr("Event stream disconnected: " + (err && err.message ? err.message : "network error"));
+          await sleepAbortable(2000, ctrl.signal);
+        } finally {
+          if (pollAbortCtrl === ctrl) pollAbortCtrl = null;
+        }
+      }
+    }
+
+    async function bootstrapDashboard() {
+      abortLongPoll();
+      sinceId = 0;
+      const ok = await loadSnapshot({ seedEvents: true });
+      if (ok && liveEnabled) {
+        startLongPollLoop();
       }
     }
 
@@ -260,62 +619,100 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById("agents-count").textContent = String(items.length);
       const el = document.getElementById("agents-body");
       if (!items.length) { el.innerHTML = '<p class="empty">No agents registered yet.</p>'; return; }
-      el.innerHTML = "<table><thead><tr><th>Agent</th><th>State</th><th>Machine</th><th>Branch</th></tr></thead><tbody>" +
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Agent</th><th>State</th><th>Machine</th><th>Branch</th></tr></thead><tbody>' +
         items.map(a => `<tr>
           <td><code>${esc(a.agent_id)}</code></td>
           <td><span class="badge ${a.is_online ? "ok" : "danger"}">${a.is_online ? "ONLINE" : "OFFLINE"}</span></td>
           <td>${esc(a.machine_name || "-")}</td>
           <td><code>${esc(a.branch || "-")}</code></td>
-        </tr>`).join("") + "</tbody></table>";
+        </tr>`).join("") + "</tbody></table></div>";
     }
 
     function renderLeases(items) {
       document.getElementById("leases-count").textContent = String(items.length);
       const el = document.getElementById("leases-body");
       if (!items.length) { el.innerHTML = '<p class="empty">No active leases. All files are unlocked.</p>'; return; }
-      el.innerHTML = "<table><thead><tr><th>Resource</th><th>Scope</th><th>Owner</th><th>Reason</th></tr></thead><tbody>" +
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Resource</th><th>Scope</th><th>Owner</th><th>Reason</th></tr></thead><tbody>' +
         items.map(l => `<tr>
           <td><code>${esc(l.resource_norm)}</code></td>
           <td>${esc(l.scope)}</td>
           <td><code>${esc(l.owner_id)}</code></td>
           <td>${esc(l.reason || "-")}</td>
-        </tr>`).join("") + "</tbody></table>";
+        </tr>`).join("") + "</tbody></table></div>";
     }
 
     function renderTasks(items) {
       document.getElementById("tasks-count").textContent = String(items.length);
       const el = document.getElementById("tasks-body");
       if (!items.length) { el.innerHTML = '<p class="empty">No tasks created yet.</p>'; return; }
-      el.innerHTML = "<table><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Owner</th></tr></thead><tbody>" +
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Owner</th></tr></thead><tbody>' +
         items.map(t => `<tr>
           <td><code>${esc(t.task_id)}</code></td>
           <td>${esc(t.title)}</td>
           <td><span class="badge ${t.status === "done" ? "ok" : "warn"}">${esc(t.status)}</span></td>
           <td><code>${esc(t.owner_id || "-")}</code></td>
-        </tr>`).join("") + "</tbody></table>";
+        </tr>`).join("") + "</tbody></table></div>";
     }
 
     function renderContext(items) {
       document.getElementById("context-count").textContent = String(items.length);
       const el = document.getElementById("context-body");
       if (!items.length) { el.innerHTML = '<p class="empty">No shared context keys set.</p>'; return; }
-      el.innerHTML = "<table><thead><tr><th>Key</th><th>Version</th><th>Updated By</th></tr></thead><tbody>" +
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Key</th><th>Version</th><th>Updated By</th></tr></thead><tbody>' +
         items.map(c => `<tr>
           <td><code>${esc(c.key)}</code></td>
           <td>v${esc(c.version)}</td>
           <td><code>${esc(c.updated_by)}</code></td>
-        </tr>`).join("") + "</tbody></table>";
+        </tr>`).join("") + "</tbody></table></div>";
     }
 
-    refreshBtn.addEventListener("click", loadState);
-    autoBtn.addEventListener("click", () => {
-      autoRefresh = !autoRefresh;
-      autoBtn.textContent = autoRefresh ? "Auto: ON (3s)" : "Auto: OFF";
-      autoBtn.setAttribute("aria-pressed", String(autoRefresh));
+    tokenInput.addEventListener("change", () => {
+      sessionStorage.setItem("agsync_token", tokenInput.value.trim());
+      bootstrapDashboard();
     });
 
-    loadState();
-    setInterval(() => { if (autoRefresh) loadState(); }, 3000);
+    refreshBtn.addEventListener("click", () => {
+      bootstrapDashboard();
+    });
+
+    autoBtn.addEventListener("click", () => {
+      liveEnabled = !liveEnabled;
+      autoLabel.textContent = liveEnabled ? "Live: ON" : "Live: OFF";
+      autoBtn.setAttribute("aria-pressed", String(liveEnabled));
+      autoBtn.classList.toggle("active", liveEnabled);
+      if (liveEnabled) {
+        startLongPollLoop();
+      } else {
+        abortLongPoll();
+      }
+    });
+
+    notifyBtn.addEventListener("click", async () => {
+      if (typeof Notification === "undefined") {
+        syncNotifyButton();
+        return;
+      }
+      if (notifyEnabled) {
+        notifyEnabled = false;
+        syncNotifyButton();
+        return;
+      }
+      if (Notification.permission === "default") {
+        try {
+          await Notification.requestPermission();
+        } catch (_err) {
+          // Ignore denied/unsupported errors
+        }
+      }
+      notifyEnabled = Notification.permission === "granted";
+      syncNotifyButton();
+    });
+
+    feedFilter.addEventListener("change", renderFeed);
+    window.addEventListener("beforeunload", abortLongPoll);
+
+    syncNotifyButton();
+    bootstrapDashboard();
   </script>
 </body>
 </html>

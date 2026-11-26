@@ -6,10 +6,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agsync.core.errors import ConflictError, NotFoundError, SyncError, ValidationError
-from agsync.core.events import EventService
+from agsync.core.events import DEFAULT_EVENT_TTL_SEC, MAX_EVENT_ROWS, EventService
 from agsync.core.locks import LockService
 from agsync.db import SyncDatabase
-from agsync.protocol import DEFAULT_AGENT_TTL_SEC, DEFAULT_LEASE_TTL_SEC
+from agsync.protocol import (
+    DEFAULT_AGENT_TTL_SEC,
+    DEFAULT_LEASE_TTL_SEC,
+    DEFAULT_SYNC_WAIT_SEC,
+)
 
 __all__ = [
     "ConflictError",
@@ -39,14 +43,62 @@ class SyncStore:
         self.case_insensitive = self.db.case_insensitive
         self._conn = self.db.conn
         self._lock = self.db.lock
-        self.locks = LockService(self.db)
+        self.boot_id = self.db.boot_id
         self.events = EventService(self.db)
+        self.locks = LockService(self.db, events=self.events)
 
     def close(self) -> None:
         self.db.close()
 
+    def wake_waiters(self, *, closing: bool = True) -> None:
+        self.db.wake_waiters(closing=closing)
+
     def purge_expired_leases(self) -> int:
         return self.locks.purge_expired()
+
+    def purge_events(
+        self,
+        *,
+        max_age_sec: float = DEFAULT_EVENT_TTL_SEC,
+        max_rows: int = MAX_EVENT_ROWS,
+    ) -> int:
+        return self.events.purge_events(max_age_sec=max_age_sec, max_rows=max_rows)
+
+    def list_events(
+        self,
+        *,
+        since_id: int = 0,
+        boot_id: str | None = None,
+        limit: int = 100,
+        event_types: list[str] | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.events.list_events(
+            since_id=since_id,
+            boot_id=boot_id,
+            limit=limit,
+            event_types=event_types,
+            agent_id=agent_id,
+        )
+
+    def wait_for_events(
+        self,
+        *,
+        since_id: int = 0,
+        boot_id: str | None = None,
+        timeout_sec: float = DEFAULT_SYNC_WAIT_SEC,
+        limit: int = 100,
+        event_types: list[str] | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.events.wait_for_events(
+            since_id=since_id,
+            boot_id=boot_id,
+            timeout_sec=timeout_sec,
+            limit=limit,
+            event_types=event_types,
+            agent_id=agent_id,
+        )
 
     # Agents
     def register_agent(

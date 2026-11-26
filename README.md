@@ -47,6 +47,12 @@ Any client that speaks **MCP** (Streamable HTTP or Stdio), **HTTP REST**, or **C
   - `hook_guard` handles UTF-8 BOM / PowerShell UTF-16LE configs and blocks agent edits to `.agsync/**`, `.agsync-agent`, and `.agents/hooks.json`.
 - **Built-In Diagnostics & Live Dashboard**: `agsync doctor` (CLI + Control Panel button) and live web dashboard at `GET /dashboard`.
 
+### Phase 2 Capabilities (`feat/phase2-multi-ide-remote`)
+- **Multi-IDE Hook Proxy (`agsync hook-proxy --host antigravity|claude|cursor`)**: Translates Antigravity (`ask`/`deny`), Claude Code (`tool_name`/`tool_input`, `exit 2` + `stderr`), and Cursor (`preToolUse` deduplication), with `--record` sampling and timeout-guarded user hook chaining.
+- **Opt-In `git worktree` (`agsync worktree create|list|remove`)**: Creates sibling `../<repo>-wt-<n>` worktrees with explicit `.agsync-agent` identity and admin-free Windows Directory Junctions for `node_modules`/`.venv`.
+- **Remote Multi-Location Onboarding**: `agsync invite` / `agsync join` (HMAC-signed single-use nonces issuing per-`agent_id` Bearer tokens) + Cloudflare Tunnel (`--protocol http2`) + GUI controls in `scripts/control_panel.py`.
+- **Real-Time Events & Live Dashboard**: SQLite `events` ring buffer (1000 records + `boot_id`), `sync_wait` MCP tool (<=15s `Condition` wait), `GET /events` long-polling, and Live Activity Feed + Browser Notifications in `/dashboard`.
+
 ---
 
 ## Quickstart

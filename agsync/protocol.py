@@ -9,6 +9,8 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8765
 DEFAULT_AGENT_TTL_SEC = 120
 DEFAULT_LEASE_TTL_SEC = 600
+MAX_SYNC_WAIT_SEC = 15.0
+DEFAULT_SYNC_WAIT_SEC = 15.0
 MCP_PROTOCOL_VERSION = "2025-03-26"
 
 TASK_STATUSES: tuple[str, ...] = (
@@ -357,6 +359,21 @@ MCP_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "key": {"type": "string"},
                 "prefix": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "sync_wait",
+        "description": "Long-poll up to 15s for new coordination events since since_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since_id": {"type": "integer", "minimum": 0},
+                "boot_id": {"type": "string"},
+                "timeout_sec": {"type": "number", "minimum": 0, "maximum": 15},
+                "event_types": {"type": "array", "items": {"type": "string"}},
+                "agent_id": {"type": "string"},
             },
             "additionalProperties": False,
         },

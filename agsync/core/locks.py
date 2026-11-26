@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from typing import Any
@@ -34,17 +35,91 @@ def row_to_lease(row: sqlite3.Row) -> dict[str, Any]:
 class LockService:
     """Exclusive TTL lease acquisition, renewal, release, and path checking."""
 
-    def __init__(self, db: SyncDatabase) -> None:
+    def __init__(self, db: SyncDatabase, *, events: Any = None) -> None:
         self.db = db
+        self.events = events
+
+    def _record_event_locked(
+        self,
+        event_type: str,
+        actor_id: str,
+        *,
+        target_id: str = "",
+        summary: str = "",
+        payload: dict[str, Any] | None = None,
+        created_at: float | None = None,
+    ) -> int:
+        if self.events is not None:
+            return int(
+                self.events.record_event_locked(
+                    event_type,
+                    actor_id,
+                    target_id=target_id,
+                    summary=summary,
+                    payload=payload,
+                    created_at=created_at,
+                )
+            )
+        ts = float(self.db.now_fn()) if created_at is None else float(created_at)
+        payload_json = json.dumps(payload or {}, ensure_ascii=False)
+        cur = self.db.conn.execute(
+            """
+            INSERT INTO events (
+                boot_id, event_type, actor_id, target_id, summary, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                self.db.boot_id,
+                str(event_type),
+                str(actor_id),
+                str(target_id),
+                str(summary),
+                payload_json,
+                ts,
+            ),
+        )
+        event_id = int(cur.lastrowid)
+        self.db.conn.execute(
+            """
+            DELETE FROM events
+            WHERE id <= (
+                SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET 1000
+            );
+            """
+        )
+        return event_id
 
     def purge_expired_locked(self, now: float) -> int:
+        expired_rows = self.db.conn.execute(
+            "SELECT lease_id, resource_norm, scope, owner_id FROM leases WHERE expires_at <= ?;",
+            (now,),
+        ).fetchall()
+        if not expired_rows:
+            return 0
         cur = self.db.conn.execute("DELETE FROM leases WHERE expires_at <= ?;", (now,))
-        return int(cur.rowcount)
+        count = int(cur.rowcount)
+        for er in expired_rows:
+            self._record_event_locked(
+                "lease_expired",
+                er["owner_id"],
+                target_id=er["resource_norm"],
+                summary=f"Lease {er['lease_id']} on {er['resource_norm']} expired",
+                payload={
+                    "lease_id": er["lease_id"],
+                    "resource_norm": er["resource_norm"],
+                    "scope": er["scope"],
+                },
+                created_at=now,
+            )
+        return count
 
     def purge_expired(self) -> int:
         now = float(self.db.now_fn())
         with self.db.write_tx():
-            return self.purge_expired_locked(now)
+            count = self.purge_expired_locked(now)
+        if count > 0:
+            self.db.notify_events()
+        return count
 
     def acquire_lease(
         self,
@@ -69,6 +144,7 @@ class LockService:
         now = float(self.db.now_fn())
         expires_at = now + ttl
 
+        result: dict[str, Any]
         with self.db.write_tx():
             self.purge_expired_locked(now)
             rows = self.db.conn.execute("SELECT * FROM leases WHERE expires_at > ?;", (now,)).fetchall()
@@ -112,23 +188,54 @@ class LockService:
                     "SELECT * FROM leases WHERE lease_id = ?;",
                     (exact_own_row["lease_id"],),
                 ).fetchone()
-                return {"lease": row_to_lease(updated), "renewed": True}
+                lease_dict = row_to_lease(updated)
+                self._record_event_locked(
+                    "lease_renewed",
+                    oid,
+                    target_id=norm,
+                    summary=f"Lease renewed on {norm} ({sc}) by {oid}",
+                    payload={
+                        "lease_id": lease_dict["lease_id"],
+                        "resource_norm": norm,
+                        "scope": sc,
+                        "fencing_token": lease_dict["fencing_token"],
+                    },
+                    created_at=now,
+                )
+                result = {"lease": lease_dict, "renewed": True}
+            else:
+                token = self.db.next_counter("fencing_seq")
+                lid = f"lease-{uuid.uuid4().hex[:10]}"
+                self.db.conn.execute(
+                    """
+                    INSERT INTO leases (
+                        lease_id, resource, resource_norm, scope, owner_id,
+                        reason, fencing_token, acquired_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (lid, resource, norm, sc, oid, str(reason), token, now, expires_at),
+                )
+                created = self.db.conn.execute(
+                    "SELECT * FROM leases WHERE lease_id = ?;", (lid,)
+                ).fetchone()
+                lease_dict = row_to_lease(created)
+                self._record_event_locked(
+                    "lease_acquired",
+                    oid,
+                    target_id=norm,
+                    summary=f"Lease acquired on {norm} ({sc}) by {oid}",
+                    payload={
+                        "lease_id": lid,
+                        "resource_norm": norm,
+                        "scope": sc,
+                        "fencing_token": lease_dict["fencing_token"],
+                    },
+                    created_at=now,
+                )
+                result = {"lease": lease_dict, "renewed": False}
 
-            token = self.db.next_counter("fencing_seq")
-            lid = f"lease-{uuid.uuid4().hex[:10]}"
-            self.db.conn.execute(
-                """
-                INSERT INTO leases (
-                    lease_id, resource, resource_norm, scope, owner_id,
-                    reason, fencing_token, acquired_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (lid, resource, norm, sc, oid, str(reason), token, now, expires_at),
-            )
-            created = self.db.conn.execute(
-                "SELECT * FROM leases WHERE lease_id = ?;", (lid,)
-            ).fetchone()
-            return {"lease": row_to_lease(created), "renewed": False}
+        self.db.notify_events()
+        return result
 
     def renew_lease(
         self,
@@ -182,7 +289,22 @@ class LockService:
             updated = self.db.conn.execute(
                 "SELECT * FROM leases WHERE lease_id = ?;", (row["lease_id"],)
             ).fetchone()
-        return row_to_lease(updated)
+            lease_dict = row_to_lease(updated)
+            self._record_event_locked(
+                "lease_renewed",
+                oid,
+                target_id=lease_dict["resource_norm"],
+                summary=f"Lease renewed on {lease_dict['resource_norm']} ({lease_dict['scope']}) by {oid}",
+                payload={
+                    "lease_id": lease_dict["lease_id"],
+                    "resource_norm": lease_dict["resource_norm"],
+                    "scope": lease_dict["scope"],
+                    "fencing_token": lease_dict["fencing_token"],
+                },
+                created_at=now,
+            )
+        self.db.notify_events()
+        return lease_dict
 
     def release_lease(
         self,
@@ -196,59 +318,97 @@ class LockService:
         oid = wrap_protocol(validate_agent_id, owner_id)
         now = float(self.db.now_fn())
 
+        result: dict[str, Any]
+        notify = False
         with self.db.write_tx():
-            self.purge_expired_locked(now)
+            expired_count = self.purge_expired_locked(now)
+            if expired_count > 0:
+                notify = True
+
             if release_all:
                 rows = self.db.conn.execute(
-                    "SELECT lease_id FROM leases WHERE owner_id = ?;", (oid,)
+                    "SELECT lease_id, resource_norm, scope FROM leases WHERE owner_id = ?;",
+                    (oid,),
                 ).fetchall()
                 ids = [r["lease_id"] for r in rows]
-                self.db.conn.execute("DELETE FROM leases WHERE owner_id = ?;", (oid,))
-                return {"released_count": len(ids), "released_ids": ids}
-
-            if not lease_id and not resource:
-                raise ValidationError(
-                    "validation_error",
-                    "Provide lease_id, resource, or release_all=True",
-                )
-            if lease_id:
-                row = self.db.conn.execute(
-                    "SELECT * FROM leases WHERE lease_id = ? AND expires_at > ?;",
-                    (lease_id, now),
-                ).fetchone()
+                if ids:
+                    self.db.conn.execute("DELETE FROM leases WHERE owner_id = ?;", (oid,))
+                    for r in rows:
+                        self._record_event_locked(
+                            "lease_released",
+                            oid,
+                            target_id=r["resource_norm"],
+                            summary=f"Lease {r['lease_id']} on {r['resource_norm']} released by {oid}",
+                            payload={
+                                "lease_id": r["lease_id"],
+                                "resource_norm": r["resource_norm"],
+                                "scope": r["scope"],
+                            },
+                            created_at=now,
+                        )
+                    notify = True
+                result = {"released_count": len(ids), "released_ids": ids}
             else:
-                sc = wrap_protocol(validate_scope, scope)
-                norm = wrap_protocol(
-                    normalize_resource,
-                    resource or "",
-                    scope=sc,
-                    case_insensitive=self.db.case_insensitive,
-                )
-                row = self.db.conn.execute(
-                    "SELECT * FROM leases WHERE resource_norm = ? AND scope = ? AND owner_id = ? AND expires_at > ?;",
-                    (norm, sc, oid, now),
-                ).fetchone()
-                if not row:
-                    peer_row = self.db.conn.execute(
-                        "SELECT * FROM leases WHERE resource_norm = ? AND scope = ? AND expires_at > ?;",
-                        (norm, sc, now),
+                if not lease_id and not resource:
+                    raise ValidationError(
+                        "validation_error",
+                        "Provide lease_id, resource, or release_all=True",
+                    )
+                if lease_id:
+                    row = self.db.conn.execute(
+                        "SELECT * FROM leases WHERE lease_id = ? AND expires_at > ?;",
+                        (lease_id, now),
                     ).fetchone()
-                    if peer_row:
-                        row = peer_row
-            if not row:
-                raise NotFoundError("lease_not_found", "Active lease not found")
-            if row["owner_id"] != oid:
-                raise ConflictError(
-                    "lease_not_owned",
-                    f"Cannot release lease owned by '{row['owner_id']}'",
-                    details={"lease": row_to_lease(row)},
+                else:
+                    sc = wrap_protocol(validate_scope, scope)
+                    norm = wrap_protocol(
+                        normalize_resource,
+                        resource or "",
+                        scope=sc,
+                        case_insensitive=self.db.case_insensitive,
+                    )
+                    row = self.db.conn.execute(
+                        "SELECT * FROM leases WHERE resource_norm = ? AND scope = ? AND owner_id = ? AND expires_at > ?;",
+                        (norm, sc, oid, now),
+                    ).fetchone()
+                    if not row:
+                        peer_row = self.db.conn.execute(
+                            "SELECT * FROM leases WHERE resource_norm = ? AND scope = ? AND expires_at > ?;",
+                            (norm, sc, now),
+                        ).fetchone()
+                        if peer_row:
+                            row = peer_row
+                if not row:
+                    raise NotFoundError("lease_not_found", "Active lease not found")
+                if row["owner_id"] != oid:
+                    raise ConflictError(
+                        "lease_not_owned",
+                        f"Cannot release lease owned by '{row['owner_id']}'",
+                        details={"lease": row_to_lease(row)},
+                    )
+                self.db.conn.execute("DELETE FROM leases WHERE lease_id = ?;", (row["lease_id"],))
+                lease_dict = row_to_lease(row)
+                self._record_event_locked(
+                    "lease_released",
+                    oid,
+                    target_id=lease_dict["resource_norm"],
+                    summary=f"Lease {lease_dict['lease_id']} on {lease_dict['resource_norm']} released by {oid}",
+                    payload={
+                        "lease_id": lease_dict["lease_id"],
+                        "resource_norm": lease_dict["resource_norm"],
+                        "scope": lease_dict["scope"],
+                    },
+                    created_at=now,
                 )
-            self.db.conn.execute("DELETE FROM leases WHERE lease_id = ?;", (row["lease_id"],))
-            return {
-                "released_count": 1,
-                "released_ids": [row["lease_id"]],
-                "released": row_to_lease(row),
-            }
+                notify = True
+                result = {
+                    "released_count": 1,
+                    "released_ids": [row["lease_id"]],
+                    "released": lease_dict,
+                }
+        if notify:
+            self.db.notify_events()
+        return result
 
     def list_leases(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
         if owner_id is not None:

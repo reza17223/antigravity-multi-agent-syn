@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import socket
 import sys
@@ -18,6 +19,7 @@ from agsync.client import SyncClient, SyncClientError
 from agsync.protocol import (
     DEFAULT_AGENT_TTL_SEC,
     DEFAULT_LEASE_TTL_SEC,
+    DEFAULT_SYNC_WAIT_SEC,
     MCP_PROTOCOL_VERSION,
     MCP_TOOLS,
 )
@@ -201,6 +203,56 @@ def dispatch_tool(
             if key:
                 return _tool_result(client.get_context(str(key)))
             return _tool_result(client.list_context(prefix=args.get("prefix")))
+
+        if tool_name == "sync_wait":
+            since_raw = args.get("since_id", 0)
+            if since_raw is None:
+                since_id = 0
+            elif isinstance(since_raw, bool) or (
+                isinstance(since_raw, float) and not since_raw.is_integer()
+            ):
+                raise TypeError("'since_id' must be a non-negative integer")
+            else:
+                since_id = int(since_raw)
+            if since_id < 0:
+                raise ValueError("'since_id' must be >= 0")
+
+            timeout_raw = args.get("timeout_sec", DEFAULT_SYNC_WAIT_SEC)
+            if timeout_raw is None:
+                timeout_sec = DEFAULT_SYNC_WAIT_SEC
+            elif isinstance(timeout_raw, bool):
+                raise TypeError("'timeout_sec' must be a number")
+            else:
+                timeout_sec = float(timeout_raw)
+            if not math.isfinite(timeout_sec) or timeout_sec < 0:
+                raise ValueError("'timeout_sec' must be finite and >= 0")
+
+            boot_id = args.get("boot_id")
+            if boot_id is not None and not isinstance(boot_id, str):
+                raise TypeError("'boot_id' must be a string")
+
+            event_types = args.get("event_types")
+            if event_types is not None:
+                if not isinstance(event_types, list) or not all(
+                    isinstance(t, str) and t.strip() for t in event_types
+                ):
+                    raise TypeError("'event_types' must be an array of non-empty strings")
+
+            agent_id = args.get("agent_id")
+            if agent_id is not None and not isinstance(agent_id, str):
+                raise TypeError("'agent_id' must be a string")
+            if isinstance(agent_id, str) and not agent_id.strip():
+                agent_id = None
+
+            return _tool_result(
+                client.wait_events(
+                    since_id=since_id,
+                    boot_id=boot_id,
+                    timeout_sec=timeout_sec,
+                    event_types=event_types,
+                    agent_id=agent_id,
+                )
+            )
 
         return _tool_result(
             {"error": "unknown_tool", "message": f"Unknown tool: {tool_name}"},

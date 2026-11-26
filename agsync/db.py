@@ -6,11 +6,12 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _BASE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS agents (
@@ -87,8 +88,48 @@ INSERT OR IGNORE INTO counters(name, val) VALUES ('fencing_seq', 0);
 INSERT OR IGNORE INTO counters(name, val) VALUES ('task_seq', 0);
 """
 
+_SCHEMA_V2_SQL = """
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    boot_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    target_id TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_created_at
+    ON events(created_at);
+
+CREATE TABLE IF NOT EXISTS invites (
+    nonce TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'agent',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    used_at REAL,
+    used_by_agent TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_invites_expires
+    ON invites(expires_at);
+
+CREATE TABLE IF NOT EXISTS agent_tokens (
+    token_hash TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL DEFAULT 'agent',
+    created_at REAL NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
+"""
+
 MIGRATIONS: dict[int, str] = {
     1: _BASE_SCHEMA_SQL,
+    2: _SCHEMA_V2_SQL,
 }
 
 
@@ -119,6 +160,10 @@ class SyncDatabase:
         )
         self.now_fn = time_fn or time.time
         self.lock = threading.RLock()
+        self.boot_id = uuid.uuid4().hex[:16]
+        self.event_cond = threading.Condition()
+        self._event_seq = 0
+        self._closed = False
 
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -136,8 +181,22 @@ class SyncDatabase:
             self.conn.close()
             raise
 
+    def notify_events(self) -> None:
+        with self.event_cond:
+            self._event_seq += 1
+            self.event_cond.notify_all()
+
+    def wake_waiters(self, closing: bool = True) -> None:
+        with self.event_cond:
+            if closing:
+                self._closed = True
+            self._event_seq += 1
+            self.event_cond.notify_all()
+
     def close(self) -> None:
+        self.wake_waiters(closing=True)
         with self.lock:
+            self._closed = True
             self.conn.close()
 
     def _init_db(self) -> None:
@@ -165,6 +224,8 @@ class SyncDatabase:
     def read_tx(self) -> Iterator[None]:
         """Run a consistent deferred read transaction without acquiring a write lock."""
         with self.lock:
+            if self._closed:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
             if self.conn.in_transaction:
                 try:
                     self.conn.execute("ROLLBACK;")
@@ -174,7 +235,7 @@ class SyncDatabase:
             try:
                 yield
             finally:
-                if self.conn.in_transaction:
+                if not self._closed and self.conn.in_transaction:
                     try:
                         self.conn.execute("ROLLBACK;")
                     except sqlite3.Error:
@@ -184,6 +245,8 @@ class SyncDatabase:
     def write_tx(self) -> Iterator[None]:
         """Run an immediate write transaction with safe rollback if COMMIT fails."""
         with self.lock:
+            if self._closed:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
             if self.conn.in_transaction:
                 try:
                     self.conn.execute("ROLLBACK;")
@@ -194,7 +257,7 @@ class SyncDatabase:
                 yield
                 self.conn.execute("COMMIT;")
             except Exception:
-                if self.conn.in_transaction:
+                if not self._closed and self.conn.in_transaction:
                     try:
                         self.conn.execute("ROLLBACK;")
                     except sqlite3.Error:
@@ -213,6 +276,8 @@ class SyncDatabase:
         dest = Path(backup_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
         with self.lock:
+            if self._closed:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
             dst_conn = sqlite3.connect(str(dest), timeout=30.0)
             try:
                 self.conn.backup(dst_conn)

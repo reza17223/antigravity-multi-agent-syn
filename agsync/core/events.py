@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
+import time
 from typing import Any
 
 from agsync.core.errors import ConflictError, NotFoundError, ValidationError, wrap_protocol
@@ -11,6 +13,8 @@ from agsync.core.locks import row_to_lease
 from agsync.db import SyncDatabase
 from agsync.protocol import (
     DEFAULT_AGENT_TTL_SEC,
+    DEFAULT_SYNC_WAIT_SEC,
+    MAX_SYNC_WAIT_SEC,
     normalize_resource,
     validate_agent_id,
     validate_agent_status,
@@ -18,6 +22,9 @@ from agsync.protocol import (
     validate_recipient_id,
     validate_task_status,
 )
+
+MAX_EVENT_ROWS = 1000
+DEFAULT_EVENT_TTL_SEC = 86400.0
 
 
 def _row_to_agent(row: sqlite3.Row, now: float) -> dict[str, Any]:
@@ -77,11 +84,267 @@ def _row_to_context(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "boot_id": row["boot_id"],
+        "event_type": row["event_type"],
+        "actor_id": row["actor_id"],
+        "target_id": row["target_id"],
+        "summary": row["summary"],
+        "payload": json.loads(row["payload_json"]),
+        "created_at": float(row["created_at"]),
+    }
+
+
 class EventService:
-    """Coordination operations for agents, messages, tasks, context, and state handoff."""
+    """Coordination operations for agents, messages, tasks, context, events, and state handoff."""
 
     def __init__(self, db: SyncDatabase) -> None:
         self.db = db
+
+    @property
+    def boot_id(self) -> str:
+        return self.db.boot_id
+
+    def wake_waiters(self, *, closing: bool = True) -> None:
+        self.db.wake_waiters(closing=closing)
+
+    def record_event_locked(
+        self,
+        event_type: str,
+        actor_id: str,
+        *,
+        target_id: str = "",
+        summary: str = "",
+        payload: dict[str, Any] | None = None,
+        created_at: float | None = None,
+    ) -> int:
+        """Insert a coordination event inside an active write_tx() and enforce the 1000-row ring buffer."""
+        ts = float(self.db.now_fn()) if created_at is None else float(created_at)
+        payload_json = json.dumps(payload or {}, ensure_ascii=False)
+        cur = self.db.conn.execute(
+            """
+            INSERT INTO events (
+                boot_id, event_type, actor_id, target_id, summary, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                self.db.boot_id,
+                str(event_type),
+                str(actor_id),
+                str(target_id),
+                str(summary),
+                payload_json,
+                ts,
+            ),
+        )
+        event_id = int(cur.lastrowid)
+        self.db.conn.execute(
+            """
+            DELETE FROM events
+            WHERE id <= (
+                SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET 1000
+            );
+            """
+        )
+        return event_id
+
+    def purge_events(
+        self,
+        *,
+        max_age_sec: float = DEFAULT_EVENT_TTL_SEC,
+        max_rows: int = MAX_EVENT_ROWS,
+    ) -> int:
+        """Prune expired events by age and enforce max_rows cap."""
+        now = float(self.db.now_fn())
+        cutoff = now - float(max_age_sec)
+        cap = max(0, int(max_rows))
+        deleted = 0
+        with self.db.write_tx():
+            cur1 = self.db.conn.execute(
+                "DELETE FROM events WHERE created_at <= ?;",
+                (cutoff,),
+            )
+            deleted += max(0, int(cur1.rowcount))
+            if cap == 0:
+                cur2 = self.db.conn.execute("DELETE FROM events;")
+            else:
+                cur2 = self.db.conn.execute(
+                    """
+                    DELETE FROM events
+                    WHERE id <= (
+                        SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET ?
+                    );
+                    """,
+                    (cap,),
+                )
+            deleted += max(0, int(cur2.rowcount))
+        return deleted
+
+    def list_events(
+        self,
+        *,
+        since_id: int = 0,
+        boot_id: str | None = None,
+        limit: int = 100,
+        event_types: list[str] | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        if isinstance(since_id, bool):
+            raise ValidationError("validation_error", "since_id must be a non-negative integer")
+        since = int(since_id)
+        if since < 0:
+            raise ValidationError("validation_error", "since_id must be >= 0")
+
+        if isinstance(limit, bool):
+            raise ValidationError("validation_error", "limit must be an integer between 1 and 1000")
+        lim = int(limit)
+        if lim < 1 or lim > 1000:
+            raise ValidationError("validation_error", "limit must be between 1 and 1000")
+
+        clean_boot = boot_id.strip() if isinstance(boot_id, str) and boot_id.strip() else None
+
+        types_clean: list[str] | None = None
+        if event_types is not None:
+            if not isinstance(event_types, (list, tuple)):
+                raise ValidationError("validation_error", "event_types must be a list of strings")
+            parsed_types = [str(t).strip() for t in event_types if isinstance(t, str) and t.strip()]
+            if len(parsed_types) != len(event_types):
+                raise ValidationError("validation_error", "event_types must contain non-empty strings")
+            if parsed_types:
+                types_clean = parsed_types
+
+        aid: str | None = None
+        if agent_id is not None and str(agent_id).strip():
+            aid = wrap_protocol(validate_agent_id, str(agent_id))
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if types_clean:
+            placeholders = ", ".join("?" for _ in types_clean)
+            clauses.append(f"event_type IN ({placeholders})")
+            params.extend(types_clean)
+        if aid is not None:
+            clauses.append("(actor_id = ? OR target_id = ? OR target_id = '*')")
+            params.extend([aid, aid])
+
+        with self.db.read_tx():
+            bounds = self.db.conn.execute(
+                "SELECT MIN(id) AS min_id, COALESCE(MAX(id), 0) AS latest_id FROM events;"
+            ).fetchone()
+            min_id = int(bounds["min_id"]) if bounds["min_id"] is not None else None
+            latest_id = int(bounds["latest_id"])
+            current_boot_id = self.db.boot_id
+
+            reset = (
+                bool(clean_boot and clean_boot != current_boot_id)
+                or (since > latest_id)
+                or (min_id is not None and since < (min_id - 1))
+            )
+
+            if reset:
+                where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                rows = self.db.conn.execute(
+                    f"""
+                    SELECT * FROM (
+                        SELECT * FROM events
+                        {where_sql}
+                        ORDER BY id DESC
+                        LIMIT ?
+                    ) ORDER BY id ASC;
+                    """,
+                    [*params, lim],
+                ).fetchall()
+            else:
+                inc_clauses = ["id > ?", *clauses]
+                where_sql = f"WHERE {' AND '.join(inc_clauses)}"
+                rows = self.db.conn.execute(
+                    f"""
+                    SELECT * FROM events
+                    {where_sql}
+                    ORDER BY id ASC
+                    LIMIT ?;
+                    """,
+                    [since, *params, lim],
+                ).fetchall()
+
+        return {
+            "boot_id": current_boot_id,
+            "latest_id": latest_id,
+            "reset": reset,
+            "events": [_row_to_event(r) for r in rows],
+        }
+
+    def wait_for_events(
+        self,
+        *,
+        since_id: int = 0,
+        boot_id: str | None = None,
+        timeout_sec: float = DEFAULT_SYNC_WAIT_SEC,
+        limit: int = 100,
+        event_types: list[str] | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        if isinstance(since_id, bool):
+            raise ValidationError("validation_error", "since_id must be a non-negative integer")
+        since = int(since_id)
+        if since < 0:
+            raise ValidationError("validation_error", "since_id must be >= 0")
+
+        if isinstance(timeout_sec, bool):
+            raise ValidationError("validation_error", "timeout_sec must be a number")
+        wait_val = float(timeout_sec)
+        if not math.isfinite(wait_val) or wait_val < 0:
+            raise ValidationError("validation_error", "timeout_sec must be a finite number >= 0")
+        wait = min(wait_val, MAX_SYNC_WAIT_SEC)
+        deadline = time.monotonic() + wait
+
+        def _closed_response(prev: dict[str, Any] | None) -> dict[str, Any]:
+            if prev is not None:
+                return {**prev, "timed_out": True}
+            return {
+                "boot_id": self.db.boot_id,
+                "latest_id": since,
+                "reset": False,
+                "timed_out": True,
+                "events": [],
+            }
+
+        last_res: dict[str, Any] | None = None
+        while True:
+            with self.db.event_cond:
+                if self.db._closed:
+                    return _closed_response(last_res)
+                seen_seq = self.db._event_seq
+
+            try:
+                res = self.list_events(
+                    since_id=since,
+                    boot_id=boot_id,
+                    limit=limit,
+                    event_types=event_types,
+                    agent_id=agent_id,
+                )
+            except sqlite3.ProgrammingError:
+                if self.db._closed:
+                    return _closed_response(last_res)
+                raise
+            last_res = res
+            if res["reset"] or res["events"]:
+                return {**res, "timed_out": False}
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {**res, "timed_out": True}
+
+            with self.db.event_cond:
+                if self.db._closed:
+                    return {**res, "timed_out": True}
+                if self.db._event_seq == seen_seq:
+                    self.db.event_cond.wait(timeout=remaining)
+                    if self.db._closed:
+                        return {**res, "timed_out": True}
 
     # ------------------------------------------------------------------
     # Agents
@@ -109,6 +372,7 @@ class EventService:
             existing = self.db.conn.execute(
                 "SELECT registered_at FROM agents WHERE agent_id = ?;", (aid,)
             ).fetchone()
+            is_new = existing is None
             reg_at = float(existing["registered_at"]) if existing else now
             self.db.conn.execute(
                 """
@@ -140,6 +404,20 @@ class EventService:
             row = self.db.conn.execute(
                 "SELECT * FROM agents WHERE agent_id = ?;", (aid,)
             ).fetchone()
+            self.record_event_locked(
+                "agent_registered",
+                aid,
+                target_id=aid,
+                summary=f"Agent {aid} registered ({st})",
+                payload={
+                    "role": str(role),
+                    "branch": str(branch),
+                    "status": st,
+                    "is_new": is_new,
+                },
+                created_at=now,
+            )
+        self.db.notify_events()
         return _row_to_agent(row, now)
 
     def heartbeat_agent(
@@ -177,6 +455,15 @@ class EventService:
             updated = self.db.conn.execute(
                 "SELECT * FROM agents WHERE agent_id = ?;", (aid,)
             ).fetchone()
+            self.record_event_locked(
+                "agent_heartbeat",
+                aid,
+                target_id=aid,
+                summary=f"Agent {aid} heartbeat ({new_status})",
+                payload={"status": new_status, "branch": str(new_branch)},
+                created_at=now,
+            )
+        self.db.notify_events()
         return _row_to_agent(updated, now)
 
     def list_agents(self, *, include_offline: bool = True) -> list[dict[str, Any]]:
@@ -222,6 +509,15 @@ class EventService:
             row = self.db.conn.execute(
                 "SELECT * FROM messages WHERE id = ?;", (msg_id,)
             ).fetchone()
+            self.record_event_locked(
+                "message_sent",
+                sid,
+                target_id=rid,
+                summary=f"Message from {sid} to {rid} ({mtype})",
+                payload={"message_id": msg_id, "msg_type": mtype},
+                created_at=now,
+            )
+        self.db.notify_events()
         return _row_to_message(row)
 
     def _get_cursor_locked(self, agent_id: str) -> int:
@@ -243,6 +539,7 @@ class EventService:
         aid = wrap_protocol(validate_agent_id, agent_id)
         lim = max(1, min(int(limit), 500))
 
+        acked_event = False
         ctx = self.db.write_tx() if auto_ack else self.db.read_tx()
         with ctx:
             cursor = self._get_cursor_locked(aid)
@@ -288,6 +585,17 @@ class EventService:
                     (aid, new_cursor),
                 )
                 cursor = new_cursor
+                self.record_event_locked(
+                    "messages_acked",
+                    aid,
+                    target_id=aid,
+                    summary=f"Agent {aid} acknowledged {len(msgs)} message(s) up to {cursor}",
+                    payload={"last_read_msg_id": cursor, "count": len(msgs)},
+                )
+                acked_event = True
+
+        if acked_event:
+            self.db.notify_events()
 
         return {
             "agent_id": aid,
@@ -311,6 +619,14 @@ class EventService:
                 (aid, target_id),
             )
             cursor = self._get_cursor_locked(aid)
+            self.record_event_locked(
+                "messages_acked",
+                aid,
+                target_id=aid,
+                summary=f"Agent {aid} acknowledged messages up to {cursor}",
+                payload={"last_read_msg_id": cursor},
+            )
+        self.db.notify_events()
         return {"agent_id": aid, "last_read_msg_id": cursor}
 
     def _count_unread_locked(self, agent_id: str) -> int:
@@ -402,6 +718,19 @@ class EventService:
             row = self.db.conn.execute(
                 "SELECT * FROM tasks WHERE task_id = ?;", (tid,)
             ).fetchone()
+            self.record_event_locked(
+                "task_created",
+                creator,
+                target_id=tid,
+                summary=f"Task {tid} created: {title.strip()}",
+                payload={
+                    "task_id": tid,
+                    "title": title.strip(),
+                    "scope_paths": norm_paths,
+                },
+                created_at=now,
+            )
+        self.db.notify_events()
         return _row_to_task(row)
 
     def list_tasks(
@@ -430,6 +759,8 @@ class EventService:
         tid = task_id.strip()
         now = float(self.db.now_fn())
 
+        result: dict[str, Any]
+        did_claim = False
         with self.db.write_tx():
             row = self.db.conn.execute(
                 "SELECT * FROM tasks WHERE task_id = ?;", (tid,)
@@ -439,8 +770,8 @@ class EventService:
             current_owner = row["owner_id"]
             current_status = row["status"]
             if current_owner == aid and current_status in ("claimed", "in_progress"):
-                return _row_to_task(row)
-            if current_status != "open" or (current_owner is not None and current_owner != aid):
+                result = _row_to_task(row)
+            elif current_status != "open" or (current_owner is not None and current_owner != aid):
                 raise ConflictError(
                     "task_already_claimed",
                     f"Task '{tid}' cannot be claimed (status={current_status}, owner={current_owner})",
@@ -450,18 +781,31 @@ class EventService:
                         "current_owner": current_owner,
                     },
                 )
-            self.db.conn.execute(
-                """
-                UPDATE tasks
-                SET status = 'claimed', owner_id = ?, updated_at = ?
-                WHERE task_id = ?;
-                """,
-                (aid, now, tid),
-            )
-            updated = self.db.conn.execute(
-                "SELECT * FROM tasks WHERE task_id = ?;", (tid,)
-            ).fetchone()
-        return _row_to_task(updated)
+            else:
+                self.db.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'claimed', owner_id = ?, updated_at = ?
+                    WHERE task_id = ?;
+                    """,
+                    (aid, now, tid),
+                )
+                updated = self.db.conn.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?;", (tid,)
+                ).fetchone()
+                self.record_event_locked(
+                    "task_claimed",
+                    aid,
+                    target_id=tid,
+                    summary=f"Task {tid} claimed by {aid}",
+                    payload={"task_id": tid, "status": "claimed"},
+                    created_at=now,
+                )
+                did_claim = True
+                result = _row_to_task(updated)
+        if did_claim:
+            self.db.notify_events()
+        return result
 
     def update_task(
         self,
@@ -507,6 +851,19 @@ class EventService:
             updated = self.db.conn.execute(
                 "SELECT * FROM tasks WHERE task_id = ?;", (tid,)
             ).fetchone()
+            self.record_event_locked(
+                "task_updated",
+                aid,
+                target_id=tid,
+                summary=f"Task {tid} updated to {new_status}",
+                payload={
+                    "task_id": tid,
+                    "status": new_status,
+                    "owner_id": new_owner,
+                },
+                created_at=now,
+            )
+        self.db.notify_events()
         return _row_to_task(updated)
 
     # ------------------------------------------------------------------
@@ -558,6 +915,15 @@ class EventService:
             row = self.db.conn.execute(
                 "SELECT * FROM context_kv WHERE key = ?;", (k,)
             ).fetchone()
+            self.record_event_locked(
+                "context_updated",
+                actor,
+                target_id=k,
+                summary=f"Context '{k}' updated to v{new_ver}",
+                payload={"key": k, "version": new_ver},
+                created_at=now,
+            )
+        self.db.notify_events()
         return _row_to_context(row)
 
     def get_context(self, key: str) -> dict[str, Any]:
@@ -610,10 +976,20 @@ class EventService:
                 "SELECT key, version, updated_by, updated_at FROM context_kv ORDER BY key ASC;"
             ).fetchall()
             unread = self._count_unread_locked(aid) if aid else None
+            ev_bounds = self.db.conn.execute(
+                "SELECT COALESCE(MAX(id), 0) AS latest_id FROM events;"
+            ).fetchone()
+            latest_event_id = int(ev_bounds["latest_id"]) if ev_bounds else 0
+            tail_rows = self.db.conn.execute(
+                "SELECT * FROM (SELECT * FROM events ORDER BY id DESC LIMIT 30) ORDER BY id ASC;"
+            ).fetchall()
 
         agents = [_row_to_agent(r, now) for r in agent_rows]
         return {
             "server_time": now,
+            "boot_id": self.db.boot_id,
+            "latest_event_id": latest_event_id,
+            "latest_events": [_row_to_event(r) for r in tail_rows],
             "case_insensitive": self.db.case_insensitive,
             "agents": agents,
             "online_agents": [a["agent_id"] for a in agents if a["is_online"]],
@@ -803,7 +1179,15 @@ class EventService:
                     "UPDATE counters SET val = MAX(val, ?) WHERE name = 'fencing_seq';",
                     (max_lease_fencing,),
                 )
+            self.record_event_locked(
+                "state_imported",
+                "system",
+                target_id="",
+                summary="State bundle imported",
+                payload={"replace": replace, "counts": counts},
+            )
 
+        self.db.notify_events()
         result: dict[str, Any] = {"imported": True, "replace": replace, "counts": counts}
         if backup_path is not None:
             result["backup_path"] = backup_path
