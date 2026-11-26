@@ -9,6 +9,7 @@ import urllib.request
 from typing import Any
 
 from agsync.adapters.network import build_opener_for_url
+from agsync.protocol import DEFAULT_SYNC_WAIT_SEC, MAX_SYNC_WAIT_SEC
 
 
 class SyncClientError(Exception):
@@ -55,6 +56,7 @@ class SyncClient:
         *,
         body: Any = None,
         query: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         url = f"{self.server_url}{path}"
         if query:
@@ -71,8 +73,9 @@ class SyncClient:
             headers["Authorization"] = f"Bearer {self.token}"
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        eff_timeout = self.timeout if timeout is None else float(timeout)
         try:
-            with self._opener.open(req, timeout=self.timeout) as resp:
+            with self._opener.open(req, timeout=eff_timeout) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
@@ -98,6 +101,63 @@ class SyncClient:
 
     def snapshot(self, *, agent_id: str | None = None) -> dict[str, Any]:
         return self._request("GET", "/snapshot", query={"agent_id": agent_id})
+
+    def get_events(
+        self,
+        *,
+        since_id: int = 0,
+        boot_id: str | None = None,
+        wait: float = 0.0,
+        limit: int = 100,
+        types: list[str] | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        clamped_wait = max(0.0, min(float(wait), MAX_SYNC_WAIT_SEC))
+        http_timeout = max(self.timeout, clamped_wait + 5.0)
+        query: dict[str, Any] = {
+            "since_id": int(since_id),
+            "wait": clamped_wait,
+            "limit": int(limit),
+        }
+        if boot_id:
+            query["boot_id"] = boot_id
+        if types:
+            query["types"] = ",".join(str(t) for t in types)
+        if agent_id:
+            query["agent_id"] = agent_id
+        return self._request("GET", "/events", query=query, timeout=http_timeout)
+
+    def wait_events(
+        self,
+        *,
+        since_id: int = 0,
+        boot_id: str | None = None,
+        timeout_sec: float = DEFAULT_SYNC_WAIT_SEC,
+        wait: float | None = None,
+        limit: int = 100,
+        event_types: list[str] | None = None,
+        types: list[str] | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        eff_wait = timeout_sec if wait is None else wait
+        eff_types = event_types if event_types is not None else types
+        res = self.get_events(
+            since_id=since_id,
+            boot_id=boot_id,
+            wait=eff_wait,
+            limit=limit,
+            types=eff_types,
+            agent_id=agent_id,
+        )
+        events = res.get("events") or []
+        timed_out = (not bool(res.get("reset"))) and (len(events) == 0)
+        return {
+            "boot_id": res.get("boot_id", ""),
+            "latest_id": int(res.get("latest_id", 0)),
+            "reset": bool(res.get("reset", False)),
+            "timed_out": timed_out,
+            "events": events,
+        }
 
     def register(
         self,

@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import logging.handlers
+import math
 import os
 import secrets
 import signal
@@ -37,6 +38,8 @@ from agsync.protocol import (
     DEFAULT_HOST,
     DEFAULT_LEASE_TTL_SEC,
     DEFAULT_PORT,
+    DEFAULT_SYNC_WAIT_SEC,
+    MAX_SYNC_WAIT_SEC,
     MCP_PROTOCOL_VERSION,
     MCP_TOOLS,
 )
@@ -259,6 +262,58 @@ def execute_mcp_tool(
                 return _tool_result(store.get_context(str(key)))
             return _tool_result({"entries": store.list_context(prefix=args.get("prefix"))})
 
+        if tool_name == "sync_wait":
+            since_raw = args.get("since_id", 0)
+            if since_raw is None:
+                since_id = 0
+            elif isinstance(since_raw, bool) or (
+                isinstance(since_raw, float) and not since_raw.is_integer()
+            ):
+                raise ValidationError("validation_error", "'since_id' must be a non-negative integer")
+            else:
+                since_id = int(since_raw)
+            if since_id < 0:
+                raise ValidationError("validation_error", "'since_id' must be >= 0")
+
+            timeout_raw = args.get("timeout_sec", DEFAULT_SYNC_WAIT_SEC)
+            if timeout_raw is None:
+                timeout_sec = DEFAULT_SYNC_WAIT_SEC
+            elif isinstance(timeout_raw, bool):
+                raise ValidationError("validation_error", "'timeout_sec' must be a number")
+            else:
+                timeout_sec = float(timeout_raw)
+            if not math.isfinite(timeout_sec) or timeout_sec < 0:
+                raise ValidationError("validation_error", "'timeout_sec' must be finite and >= 0")
+            timeout_sec = min(timeout_sec, MAX_SYNC_WAIT_SEC)
+
+            boot_id = args.get("boot_id")
+            if boot_id is not None and not isinstance(boot_id, str):
+                raise ValidationError("validation_error", "'boot_id' must be a string")
+
+            event_types = args.get("event_types")
+            if event_types is not None:
+                if not isinstance(event_types, list) or not all(
+                    isinstance(t, str) and t.strip() for t in event_types
+                ):
+                    raise ValidationError(
+                        "validation_error", "'event_types' must be an array of non-empty strings"
+                    )
+
+            agent_id = args.get("agent_id")
+            if agent_id is not None and not isinstance(agent_id, str):
+                raise ValidationError("validation_error", "'agent_id' must be a string")
+            if isinstance(agent_id, str) and not agent_id.strip():
+                agent_id = None
+
+            res = store.wait_for_events(
+                since_id=since_id,
+                boot_id=boot_id,
+                timeout_sec=timeout_sec,
+                event_types=event_types,
+                agent_id=agent_id,
+            )
+            return _tool_result(res)
+
         return _tool_result(
             {"error": "unknown_tool", "message": f"Unknown tool: {tool_name}"},
             is_error=True,
@@ -430,12 +485,20 @@ class CoordinationHTTPServer(ThreadingHTTPServer):
                 self.store.purge_expired_leases()
             except Exception:
                 pass
+            try:
+                self.store.purge_events()
+            except Exception:
+                pass
 
     def server_close(self) -> None:
         self._purge_stop.set()
         if self._purge_thread is not None:
             self._purge_thread.join(timeout=1.0)
             self._purge_thread = None
+        try:
+            self.store.wake_waiters(closing=True)
+        except Exception:
+            pass
         try:
             super().server_close()
         finally:
@@ -679,6 +742,8 @@ class CoordinationHandler(BaseHTTPRequestHandler):
                 {"error": "validation_error", "message": str(exc)},
                 close_conn=True,
             )
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
         except Exception as exc:
             self.log_message("Unhandled exception: %s", exc)
             try:
@@ -716,6 +781,8 @@ class CoordinationHandler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "version": __version__,
+                    "boot_id": snap["boot_id"],
+                    "latest_event_id": snap["latest_event_id"],
                     "uptime_sec": round(time.time() - self.server.started_at, 3),
                     "auth_required": self.server.token is not None,
                     "case_insensitive": snap["case_insensitive"],
@@ -728,6 +795,63 @@ class CoordinationHandler(BaseHTTPRequestHandler):
 
         is_state_route = path.startswith("/state/")
         if not self._check_auth(admin_required=is_state_route):
+            return
+
+        if path == "/events":
+            since_raw = qs.get("since_id", ["0"])[0]
+            since_id = int(since_raw)
+            if since_id < 0:
+                raise ValidationError("validation_error", "since_id must be >= 0")
+
+            boot_raw = qs.get("boot_id", [None])[0]
+            boot_id = boot_raw.strip() if (boot_raw and boot_raw.strip()) else None
+
+            wait_raw = qs.get("wait", ["0"])[0]
+            wait_val = float(wait_raw)
+            if not math.isfinite(wait_val) or wait_val < 0:
+                raise ValidationError("validation_error", "wait must be a finite number >= 0")
+            wait_sec = min(wait_val, MAX_SYNC_WAIT_SEC)
+
+            limit_raw = qs.get("limit", ["100"])[0]
+            limit = int(limit_raw)
+            if limit < 1 or limit > 1000:
+                raise ValidationError("validation_error", "limit must be between 1 and 1000")
+
+            parsed_types = [
+                t.strip()
+                for chunk in qs.get("types", [])
+                for t in chunk.split(",")
+                if t.strip()
+            ]
+            event_types = parsed_types or None
+
+            agent_raw = qs.get("agent_id", [None])[0]
+            agent_id = agent_raw.strip() if (agent_raw and agent_raw.strip()) else None
+
+            if wait_sec > 0:
+                res = self.server.store.wait_for_events(
+                    since_id=since_id,
+                    boot_id=boot_id,
+                    timeout_sec=wait_sec,
+                    limit=limit,
+                    event_types=event_types,
+                    agent_id=agent_id,
+                )
+                payload = {
+                    "boot_id": res["boot_id"],
+                    "latest_id": res["latest_id"],
+                    "reset": res["reset"],
+                    "events": res["events"],
+                }
+            else:
+                payload = self.server.store.list_events(
+                    since_id=since_id,
+                    boot_id=boot_id,
+                    limit=limit,
+                    event_types=event_types,
+                    agent_id=agent_id,
+                )
+            self._send_json(200, payload)
             return
 
         if path == "/mcp":
