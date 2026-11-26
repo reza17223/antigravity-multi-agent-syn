@@ -13,6 +13,7 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from agsync.adapters.ide import decode_bytes_auto, read_text_auto
 from agsync.client import SyncClient, SyncClientError
 
 WRITE_TOOLS = frozenset(
@@ -38,8 +39,44 @@ PATH_ARG_KEYS = (
 )
 
 
+def _logical_abs(path: Path | str) -> str:
+    """Normalize a path logically without dereferencing Windows Junctions or symlinks."""
+    return os.path.abspath(os.path.normpath(str(path)))
+
+
+def _relative_to_logical(target_abs: str, root_abs: str) -> str | None:
+    """Return forward-slash relative path if target_abs is inside root_abs logically."""
+    if os.name == "nt":
+        t_cmp = os.path.normcase(target_abs)
+        r_cmp = os.path.normcase(root_abs)
+    else:
+        t_cmp = target_abs
+        r_cmp = root_abs
+    try:
+        common = os.path.commonpath([r_cmp, t_cmp])
+    except ValueError:
+        return None
+    if common != r_cmp:
+        return None
+    rel = os.path.relpath(target_abs, root_abs).replace("\\", "/")
+    return "." if rel == "." else rel.strip("/")
+
+
+def _is_protected_rel_path(rel_path: str) -> bool:
+    """Protect agsync config, identity, and hook files from agent modification."""
+    norm = rel_path.replace("\\", "/").strip("/")
+    if os.name == "nt":
+        norm = norm.lower()
+    return (
+        norm == ".agsync"
+        or norm.startswith(".agsync/")
+        or norm == ".agsync-agent"
+        or norm == ".agents/hooks.json"
+    )
+
+
 def _find_repo_root_strict(start: Path) -> Path | None:
-    cur = start.resolve()
+    cur = Path(_logical_abs(start))
     for candidate in (cur, *cur.parents):
         if (candidate / ".git").exists() or (candidate / ".agsync").exists():
             return candidate
@@ -47,16 +84,19 @@ def _find_repo_root_strict(start: Path) -> Path | None:
 
 
 def _find_repo_root(start: Path) -> Path:
-    return _find_repo_root_strict(start) or start.resolve()
+    return _find_repo_root_strict(start) or Path(_logical_abs(start))
 
 
 def _read_local_setting(repo_root: Path, filenames: tuple[str, ...]) -> str | None:
     for rel in filenames:
         p = repo_root / rel
-        if p.is_file():
-            val = p.read_text(encoding="utf-8").strip().splitlines()
-            if val and val[0].strip():
-                return val[0].strip()
+        try:
+            if p.is_file():
+                val = read_text_auto(p).strip().splitlines()
+                if val and val[0].strip():
+                    return val[0].strip()
+        except OSError:
+            continue
     return None
 
 
@@ -79,6 +119,8 @@ def evaluate_hook_payload(
     timeout: float = 2.0,
 ) -> dict[str, Any]:
     tool_call = payload.get("toolCall") or {}
+    if not isinstance(tool_call, dict):
+        return {"decision": "allow"}
     tool_name = str(tool_call.get("name") or "").strip().lower()
     if tool_name not in WRITE_TOOLS:
         return {"decision": "allow"}
@@ -95,12 +137,14 @@ def evaluate_hook_payload(
     ws_list = payload.get("workspacePaths") or []
     if not raw_cwd:
         raw_cwd = ws_list[0] if isinstance(ws_list, list) and ws_list else os.getcwd()
-    cwd_path = Path(str(raw_cwd)).resolve()
+    cwd_abs = _logical_abs(str(raw_cwd))
+    cwd_path = Path(cwd_abs)
 
-    target_path = Path(raw_target)
-    if not target_path.is_absolute():
-        target_path = cwd_path / target_path
-    resolved_target = target_path.resolve()
+    if os.path.isabs(raw_target):
+        target_abs = _logical_abs(raw_target)
+    else:
+        target_abs = _logical_abs(os.path.join(cwd_abs, raw_target))
+    target_path = Path(target_abs)
 
     candidate_roots: list[Path] = []
     cwd_repo = _find_repo_root_strict(cwd_path)
@@ -109,29 +153,37 @@ def evaluate_hook_payload(
     if isinstance(ws_list, list):
         for ws in ws_list:
             if isinstance(ws, str) and ws.strip():
-                ws_repo = _find_repo_root_strict(Path(ws.strip()).resolve())
+                ws_repo = _find_repo_root_strict(Path(_logical_abs(ws.strip())))
                 if ws_repo is not None and ws_repo not in candidate_roots:
                     candidate_roots.append(ws_repo)
-    target_repo = _find_repo_root_strict(resolved_target.parent)
+    target_repo = _find_repo_root_strict(target_path.parent)
     if target_repo is not None and target_repo not in candidate_roots:
         candidate_roots.append(target_repo)
 
     repo_root: Path | None = None
     rel_path: str | None = None
     for cand in candidate_roots:
-        try:
-            rel_path = resolved_target.relative_to(cand).as_posix()
+        rel = _relative_to_logical(target_abs, str(cand))
+        if rel is not None:
+            rel_path = rel
             repo_root = cand
             break
-        except ValueError:
-            continue
 
     if repo_root is None or rel_path is None:
         # Target is outside any project repository (e.g. ~/.gemini/ brain/artifacts) -> allow.
         return {"decision": "allow"}
 
-    if not rel_path or rel_path == "." or rel_path.startswith(".git/"):
+    if not rel_path or rel_path == "." or rel_path.startswith(".git/") or rel_path == ".git":
         return {"decision": "allow"}
+
+    if _is_protected_rel_path(rel_path):
+        return {
+            "decision": "deny",
+            "reason": (
+                f"AGSYNC PROTECTED PATH: '{rel_path}' is a protected agsync config/hook file "
+                "and cannot be modified by an agent."
+            ),
+        }
 
     eff_server = (
         server_url
@@ -157,9 +209,12 @@ def evaluate_hook_payload(
         res = client.check_paths([rel_path], agent_id=eff_agent, scope="file")
     except SyncClientError as exc:
         if exc.unreachable and not fail_closed:
-            sys.stderr.write(
-                f"[agsync-hook] Server unreachable ({eff_server}); fail-open allow for {rel_path}\n"
-            )
+            try:
+                sys.stderr.write(
+                    f"[agsync-hook] Server unreachable ({eff_server}); fail-open allow for {rel_path}\n"
+                )
+            except OSError:
+                pass
             return {"decision": "allow"}
         return {
             "decision": "deny",
@@ -196,55 +251,75 @@ def evaluate_hook_payload(
     return {"decision": "allow"}
 
 
+def _read_stdin_text() -> str:
+    buf = getattr(sys.stdin, "buffer", None)
+    if buf is not None:
+        return decode_bytes_auto(buf.read())
+    return sys.stdin.read()
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="agsync-hook-guard",
-        description="Antigravity PreToolUse hook checking agsync file leases via stdin/stdout JSON.",
-    )
-    parser.add_argument("--server", default=None)
-    parser.add_argument("--agent", default=None)
-    parser.add_argument("--token", default=None)
-    parser.add_argument(
-        "--fail-closed",
-        action="store_true",
-        help="Deny edits if the agsync server is unreachable (default: fail-open).",
-    )
-    parser.add_argument(
-        "--require-lease",
-        action="store_true",
-        help="Require this agent to already hold an active lease before allowing edit/write.",
-    )
-    parser.add_argument("--timeout", type=float, default=2.0)
-    args = parser.parse_args(argv)
+    fail_closed = False
+    try:
+        parser = argparse.ArgumentParser(
+            prog="agsync-hook-guard",
+            description="Antigravity PreToolUse hook checking agsync file leases via stdin/stdout JSON.",
+        )
+        parser.add_argument("--server", default=None)
+        parser.add_argument("--agent", default=None)
+        parser.add_argument("--token", default=None)
+        parser.add_argument(
+            "--fail-closed",
+            action="store_true",
+            help="Deny edits if the agsync server is unreachable (default: fail-open).",
+        )
+        parser.add_argument(
+            "--require-lease",
+            action="store_true",
+            help="Require this agent to already hold an active lease before allowing edit/write.",
+        )
+        parser.add_argument("--timeout", type=float, default=2.0)
+        args = parser.parse_args(argv)
+        fail_closed = bool(args.fail_closed)
 
-    if hasattr(sys.stdin, "reconfigure"):
-        sys.stdin.reconfigure(encoding="utf-8-sig")
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
 
-    raw_stdin = sys.stdin.read().lstrip("\ufeff").strip()
-    if not raw_stdin:
-        out = {"decision": "allow"}
-    else:
+        raw_stdin = _read_stdin_text().lstrip("\ufeff").strip()
+        if not raw_stdin:
+            out: dict[str, Any] = {"decision": "allow"}
+        else:
+            try:
+                payload = json.loads(raw_stdin)
+                if not isinstance(payload, dict):
+                    payload = {}
+                out = evaluate_hook_payload(
+                    payload,
+                    server_url=args.server,
+                    agent_id=args.agent,
+                    token=args.token,
+                    fail_closed=fail_closed,
+                    require_lease=args.require_lease,
+                    timeout=args.timeout,
+                )
+            except json.JSONDecodeError as exc:
+                out = (
+                    {"decision": "deny", "reason": f"Invalid hook stdin JSON: {exc}"}
+                    if fail_closed
+                    else {"decision": "allow"}
+                )
+    except SystemExit:
+        raise
+    except Exception as exc:
         try:
-            payload = json.loads(raw_stdin)
-            if not isinstance(payload, dict):
-                payload = {}
-            out = evaluate_hook_payload(
-                payload,
-                server_url=args.server,
-                agent_id=args.agent,
-                token=args.token,
-                fail_closed=args.fail_closed,
-                require_lease=args.require_lease,
-                timeout=args.timeout,
-            )
-        except json.JSONDecodeError as exc:
-            out = (
-                {"decision": "deny", "reason": f"Invalid hook stdin JSON: {exc}"}
-                if args.fail_closed
-                else {"decision": "allow"}
-            )
+            sys.stderr.write(f"[agsync-hook] Unexpected error: {exc}\n")
+        except OSError:
+            pass
+        out = (
+            {"decision": "deny", "reason": f"agsync hook_guard error: {exc}"}
+            if fail_closed
+            else {"decision": "allow"}
+        )
 
     sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
     sys.stdout.flush()

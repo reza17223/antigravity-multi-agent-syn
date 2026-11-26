@@ -11,11 +11,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from agsync.adapters.ide import atomic_write_text, merge_json_file, read_text_auto
+from agsync.db import default_data_dir
 from agsync.protocol import DEFAULT_PORT, validate_agent_id
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = PACKAGE_ROOT / "templates"
-DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "agsync.config.json"
+DEFAULT_CONFIG_PATH = default_data_dir() / "config.json"
+LEGACY_CONFIG_PATH = PACKAGE_ROOT / "agsync.config.json"
 
 
 def detect_lan_ip() -> str:
@@ -60,8 +63,11 @@ def default_agent_id() -> str:
 
 
 def load_config(path: Path | None = None) -> dict[str, Any]:
-    """Load agsync.config.json with sensible defaults."""
+    """Load agsync config with sensible defaults (BOM/UTF-16 safe)."""
     cfg_path = path or DEFAULT_CONFIG_PATH
+    if not cfg_path.is_file() and path is None and LEGACY_CONFIG_PATH.is_file():
+        cfg_path = LEGACY_CONFIG_PATH
+
     defaults: dict[str, Any] = {
         "mode": "host",
         "agent_id": default_agent_id(),
@@ -74,7 +80,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     }
     if cfg_path.is_file():
         try:
-            loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+            loaded = json.loads(read_text_auto(cfg_path))
             if isinstance(loaded, dict):
                 defaults.update({k: v for k, v in loaded.items() if v is not None})
         except Exception:
@@ -83,10 +89,13 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
 
 
 def save_config(data: dict[str, Any], path: Path | None = None) -> Path:
-    """Persist agsync.config.json."""
+    """Persist agsync config atomically to ~/.agsync/config.json (or explicit path)."""
     cfg_path = path or DEFAULT_CONFIG_PATH
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(
+        cfg_path,
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        create_backup=False,
+    )
     return cfg_path
 
 
@@ -103,7 +112,7 @@ def configure_antigravity_mcp(
     token: str = "",
     mcp_config_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Safely add/update the 'agsync' entry in Antigravity's mcp_config.json."""
+    """Atomically merge/update the 'agsync' entry in Antigravity's mcp_config.json."""
     aid = validate_agent_id(agent_id)
     base_url = server_url.strip().rstrip("/")
     if not base_url.startswith(("http://", "https://")):
@@ -112,26 +121,6 @@ def configure_antigravity_mcp(
         raise ValueError("MCP mode must be 'http' or 'stdio'")
 
     target = mcp_config_path or default_mcp_config_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    existing: dict[str, Any] = {}
-    backup_path: str | None = None
-    if target.is_file():
-        raw = target.read_text(encoding="utf-8-sig").strip()
-        if raw:
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
-                raise ValueError(f"{target} must contain a JSON object")
-            existing = parsed
-        bak = target.with_suffix(".json.bak")
-        shutil.copy2(target, bak)
-        backup_path = str(bak)
-
-    servers = existing.get("mcpServers")
-    if servers is None:
-        servers = {}
-    if not isinstance(servers, dict):
-        raise ValueError("'mcpServers' in mcp_config.json must be a JSON object")
 
     if mode == "http":
         headers: dict[str, str] = {"X-Agent-Id": aid}
@@ -158,9 +147,20 @@ def configure_antigravity_mcp(
             },
         }
 
-    servers["agsync"] = entry
-    existing["mcpServers"] = servers
-    target.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    def _merge(existing: dict[str, Any]) -> dict[str, Any]:
+        servers = existing.get("mcpServers")
+        if servers is None:
+            servers = {}
+        if not isinstance(servers, dict):
+            raise ValueError("'mcpServers' in mcp_config.json must be a JSON object")
+        merged_servers = dict(servers)
+        # Replace 'agsync' entry cleanly (also eliminates stale 'serverUrl' vs 'url' conflicts)
+        merged_servers["agsync"] = entry
+        out = dict(existing)
+        out["mcpServers"] = merged_servers
+        return out
+
+    _, backup_path = merge_json_file(target, merge_fn=_merge, create_backup=True)
 
     return {
         "mcp_config_path": str(target),
@@ -173,7 +173,7 @@ def configure_antigravity_mcp(
 
 def copy_project_templates(repo: Path, *, overwrite_agents_md: bool = False) -> list[str]:
     """Copy AGENTS.md and .agents/skills/sync-* templates into a target repo without clobbering."""
-    target_repo = repo.resolve()
+    target_repo = Path(os.path.abspath(os.path.normpath(str(repo))))
     if not target_repo.is_dir():
         raise FileNotFoundError(f"Repository directory does not exist: {target_repo}")
 
