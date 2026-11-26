@@ -1,144 +1,107 @@
-# Antigravity Multi-Agent Sync (`agsync`)
+# `agsync` — Universal Multi-Agent & Multi-IDE Sync
 
 [English](README.md) | [فارسی](README.fa.md)
 
-Zero-dependency **Python 3.12 stdlib** LAN coordination server, MCP bridge, CLI, Windows/cross-platform Control Panel, and Git/IDE lease guards enabling two or more developers running **Antigravity** on adjacent machines to collaborate concurrently on a shared repository without silent overwrites or lock conflicts.
+[![CI](https://github.com/reza17223/antigravity-multi-agent-syn/actions/workflows/ci.yml/badge.svg)](https://github.com/reza17223/antigravity-multi-agent-syn/actions/workflows/ci.yml)
+
+Zero-dependency **Python 3.12 stdlib** LAN coordination hub, MCP server, CLI, GUI Control Panel, and Git/IDE lease guards enabling **any AI coding agents** — **Antigravity, Claude Code, Cursor, Windsurf, Codex, Gemini CLI, or custom CLI scripts** — across adjacent machines or parallel workspaces to collaborate on one codebase without overwrites or lock conflicts.
 
 ---
 
-## Why This Exists
+## Why `agsync`?
 
-Each Antigravity installation runs locally (`language_server.exe` bound to `localhost`, machine-local `~/.gemini/antigravity/` and `~/.gemini/config/`). Antigravity has **no built-in cross-machine agent mesh, distributed file locking, or shared task board**.
+Modern AI coding runtimes execute locally on each developer's machine and have **no built-in cross-machine agent mesh, distributed file locking, or shared task board**. Sharing raw working folders over SMB, OneDrive, or Syncthing causes silent write races, corrupted `.git/index.lock` files, and broken `node_modules` / `.venv` caches.
 
-**Hybrid Architecture**:
-- **Code Plane (Git)**: Each machine keeps its own local Git checkout on its own feature branch (`agent-a/<task>`, `agent-b/<task>`), avoiding `.git/index.lock` races and build-artifact collisions (`node_modules`, `.venv`, `__pycache__`). Works with GitHub/GitLab or 100% offline over LAN.
-- **Control Plane (`agsync`)**: A hardened Python 3.12 stdlib coordination hub (`SQLite WAL` + `PRAGMA user_version` migrations) hosted on one machine and exposed to agents via **Streamable HTTP (`/mcp`)** or **Stdio MCP bridge (`agsync.mcp_bridge`)**, enforced by **Antigravity `PreToolUse` hooks** and **Git `pre-commit` guards**.
+**Hybrid Architecture (Code Plane + Control Plane)**:
+- **Code Plane (`Git`)**: Every agent/machine keeps its own Git clone (or local worktree) on its own feature branch (`agent-a/<task>`, `agent-b/<task>`). Works with GitHub/GitLab or 100% offline over LAN.
+- **Control Plane (`agsync`)**: A lightweight Python 3.12 stdlib coordination server (`SQLite WAL` + `PRAGMA user_version`) exposing **Streamable HTTP (`/mcp`)**, **Stdio MCP (`agsync.mcp_bridge`)**, and **REST JSON**, backed by **Git `pre-commit`** and **IDE `PreToolUse` guards**.
 
 ---
 
-## Key Capabilities (Phase 1 / `v0.1.0`)
+## Compatible Agents & IDEs
 
-- **Exclusive TTL Leases & Fencing Tokens**: Hierarchical file, directory, and symbol locks (`scope: file | dir | symbol`) with Windows case-insensitive normalization and Junction-safe logical path checks.
-- **Real-Time Messaging & Atomic Tasks**: Direct and broadcast messaging with explicit read cursors (`POST /messages/ack`), atomic task claiming (`409 Conflict` on duplicate claim), and CAS-versioned shared context KV (`expected_version`).
+Any client that speaks **MCP** (Streamable HTTP or Stdio), **HTTP REST**, or **CLI** works out of the box:
+
+| Client / Agent | How It Connects | Status |
+|---|---|---|
+| **Antigravity** | Streamable HTTP (`/mcp`) or Stdio (`agsync.mcp_bridge`) + `.agents/hooks.json` | Supported (auto-setup via `agsync setup-mcp`) |
+| **Claude Code / Cursor / Windsurf / Cline** | Standard MCP (`url` or `command`: `python -m agsync.mcp_bridge`) + `AGENTS.md` | Supported via standard MCP JSON |
+| **Codex / Gemini CLI / Custom Scripts** | Stdio MCP or `python -m agsync.cli` / REST API | Supported |
+
+*(Phase 2 adds dedicated `agsync hook-proxy --host <ide>` adapters for Claude Code & Cursor native hooks plus `git worktree` orchestration.)*
+
+---
+
+## Core Capabilities (`v0.1.0` — Phase 1)
+
+- **Exclusive TTL Leases & Fencing Tokens**: Hierarchical locks (`file`, `dir`, `symbol`) with monotonic `fencing_token`, Windows case-insensitive normalization, and Junction-safe logical path checks.
+- **Atomic Task Splitting & Shared Context**: `409 Conflict` on duplicate task claims, CAS-versioned shared KV (`expected_version`) for API contracts/ports, and direct/broadcast messaging with explicit read cursors (`POST /messages/ack`).
 - **Security & Concurrency Hardening**:
-  - `Content-Type: application/json` enforcement on mutating endpoints and `Host`/`Origin` validation against CSRF and DNS-rebinding.
-  - Strict read-only `GET /messages` (no state mutation on `GET`).
-  - Required Bearer token (`--token`, `--auto-token`, or explicit `--allow-insecure-lan`) when binding non-loopback addresses (`0.0.0.0`).
-  - `SO_EXCLUSIVEADDRUSE` on Windows + OS-locked `<db>.pid` lockfile to prevent dual zombie hubs.
+  - `Content-Type: application/json` enforcement (`415`) and `Host`/`Origin` validation (`403`) against CSRF and DNS-rebinding.
+  - Strictly read-only `GET /messages` (cursor updates require `POST /messages/ack`).
+  - Required Bearer token (`--token`, `--auto-token`, or explicit `--allow-insecure-lan`) on non-loopback binds (`0.0.0.0`).
+  - Windows `SO_EXCLUSIVEADDRUSE` + OS-locked `<db>.pid` lockfile preventing dual zombie hubs.
   - Automatic `ProxyHandler({})` bypass for loopback and private LAN addresses (preventing v2rayN/Clash/Happ proxy hijacking).
-- **Worktree & Windows BOM/UTF-16 Resilience**:
-  - `install-hooks` resolves `--git-common-dir` and `--git-path hooks` (supporting `git worktree` and `core.hooksPath`), avoids hardcoding transient venv Python paths, and performs atomic non-destructive JSON merges for `.agents/hooks.json` and `mcp_config.json`.
-  - BOM / PowerShell UTF-16LE safe config reading and protection of `.agsync/**`, `.agsync-agent`, and `.agents/hooks.json` from agent edits.
-- **Diagnostics (`agsync doctor`) & Live Dashboard**: Built-in environment/network/hook diagnostic command + self-contained web dashboard at `GET /dashboard`.
-
----
-
-## Repository Layout
-
-```text
-antigravity_multi_agent_sync/
-├── README.md                       # English documentation
-├── README.fa.md                    # Persian documentation (مستندات فارسی)
-├── pyproject.toml
-├── Start_Sync_Panel.bat            # Unified Host/Peer GUI launcher (Windows)
-├── Start_Host_Panel.bat
-├── Start_Peer_Panel.bat
-├── .github/workflows/ci.yml        # GitHub Actions CI (Windows, Ubuntu, macOS)
-├── agsync/
-│   ├── __init__.py
-│   ├── db.py                       # SQLite WAL connection, user_version migrations, read_tx/write_tx
-│   ├── protocol.py                 # Validation, path normalization, overlap matrix, compact MCP schemas
-│   ├── store.py                    # Backward-compatible SyncStore facade
-│   ├── server.py                   # Hardened ThreadingHTTPServer (REST API + Streamable HTTP /mcp)
-│   ├── client.py                   # Stdlib urllib client with LAN proxy bypass
-│   ├── mcp_bridge.py               # JSON-RPC 2.0 Stdio MCP bridge
-│   ├── hook_guard.py               # Antigravity PreToolUse lease & protected-path guard
-│   ├── config.py                   # User config (~/.agsync/) & Antigravity mcp_config.json registration
-│   ├── discovery.py                # Zero-dependency UDP LAN beacon & discovery
-│   ├── dashboard.py                # Built-in web dashboard (/dashboard)
-│   ├── cli.py                      # CLI entrypoint
-│   ├── core/
-│   │   ├── errors.py               # SyncError, ConflictError, NotFoundError, ValidationError
-│   │   ├── locks.py                # Lease acquisition, renewal, release, path checking
-│   │   ├── events.py               # Agents, messages, tasks, context KV, snapshot, export/import
-│   │   └── git_ops.py              # Git common-dir, hooks path, staged files, version checks
-│   ├── adapters/
-│   │   ├── network.py              # Proxy bypass, PID lockfile, TCP probe, Windows Job Object
-│   │   └── ide.py                  # BOM/UTF-16 decoding, atomic writes, non-destructive JSON merge
-│   └── commands/
-│       ├── doctor.py               # `agsync doctor` diagnostic suite
-│       ├── hooks.py                # `guard` and `install-hooks` handlers
-│       └── sync_cmds.py            # Standard coordination CLI subcommands
-├── templates/
-│   ├── AGENTS.md                   # Drop-in workspace rules enforcing lease-before-edit
-│   ├── mcp_config.http.json
-│   ├── mcp_config.stdio.json
-│   └── .agents/
-│       ├── hooks.json
-│       └── skills/                 # sync-start, sync-check, sync-handoff
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── OVERVIEW.fa.md
-│   ├── ROADMAP.fa.md
-│   ├── RUBRIC.md
-│   ├── SETUP_GUIDE.md
-│   └── SETUP_GUIDE.fa.md
-├── scripts/
-│   ├── control_panel.py            # Tkinter Control Panel (Host/Peer, Doctor, Firewall, MCP & Hooks)
-│   └── smoke_check.py              # End-to-end smoke check (--spawn-local or --server URL)
-└── tests/                          # Unit & integration tests (38 tests)
-```
+- **Git Worktree, BOM/UTF-16 & Protected-Path Guardrails**:
+  - `install-hooks` uses `git rev-parse --git-common-dir` and `--git-path hooks` (supporting `git worktree` and `core.hooksPath`), avoids hardcoding transient venv paths in `pre-commit`, and performs atomic (`.bak` + `os.replace`) non-destructive JSON merges.
+  - `hook_guard` handles UTF-8 BOM / PowerShell UTF-16LE configs and blocks agent edits to `.agsync/**`, `.agsync-agent`, and `.agents/hooks.json`.
+- **Built-In Diagnostics & Live Dashboard**: `agsync doctor` (CLI + Control Panel button) and live web dashboard at `GET /dashboard`.
 
 ---
 
 ## Quickstart
 
-### Option A: GUI Control Panel (Recommended on Windows)
-1. Double-click `Start_Sync_Panel.bat` (or run `python scripts/control_panel.py`).
-2. **Host (Machine A)**: Select `HOST (Hub)`, set an `Agent ID`, click **Generate Token** (or let **Start Hub Server** auto-generate one), open Windows Firewall if on LAN (**Open Firewall (Admin)**), and click **Start Hub Server**.
-3. **Peer (Machine B)**: Select `PEER (Client)`, enter the Host LAN IP (or click **Discover LAN Hub**), paste the shared Bearer token, and click **Test Connection (TCP + /health)**.
-4. On both machines, select your shared project directory and click **Connect Antigravity MCP** and **Install Repo Hooks & Templates**.
+### Option 1: GUI Control Panel (Recommended on Windows)
+1. Launch `Start_Sync_Panel.bat` (or `python scripts/control_panel.py`).
+2. **Host (Machine A)**: Select `HOST (Hub)`, set `Agent ID`, click **Generate Token** (or let **Start Hub Server** auto-generate one), click **Open Firewall (Admin)** if needed on LAN, and click **Start Hub Server**.
+3. **Peer (Machine B)**: Select `PEER (Client)`, enter Host LAN IP (or click **Discover LAN Hub**), paste the shared token, and click **Test Connection (TCP + /health)**.
+4. Connect your IDE's MCP (`Connect Antigravity MCP` for `~/.gemini/config/mcp_config.json`, or copy the MCP snippet below for Claude Code / Cursor) and click **Install Repo Hooks & Templates**.
 
-### Option B: CLI
-1. **Start the Hub on Machine A** (state DB defaults to `~/.agsync/state.db`):
+### Option 2: CLI (Any OS / Any Agent)
+1. **Start the Hub** (state DB defaults to `~/.agsync/state.db`):
    ```powershell
    $env:AGSYNC_TOKEN = "your-shared-secret"
    python -m agsync.cli serve --host 0.0.0.0 --port 8765
    ```
-   *(For local-only testing on loopback, `--host 127.0.0.1` works without a token.)*
-2. **Verify health & diagnostics**:
-   ```powershell
-   Invoke-RestMethod http://127.0.0.1:8765/health
-   python -m agsync.cli doctor --repo C:\path\to\your\project
+   *(For local-only testing on `127.0.0.1`, no token is required.)*
+2. **Connect any MCP-compatible agent** (using `templates/mcp_config.http.json` or `templates/mcp_config.stdio.json`):
+   ```json
+   {
+     "mcpServers": {
+       "agsync": {
+         "url": "http://127.0.0.1:8765/mcp?agent=agent-a",
+         "headers": {
+           "X-Agent-Id": "agent-a",
+           "Authorization": "Bearer your-shared-secret"
+         }
+       }
+     }
+   }
    ```
-3. **Register Antigravity MCP & install repo hooks**:
+3. **Install Git guards & run diagnostics**:
    ```powershell
-   python -m agsync.cli setup-mcp --server http://127.0.0.1:8765 --agent machine-a --token your-shared-secret
-   python -m agsync.cli install-hooks --repo C:\path\to\your\project --server http://127.0.0.1:8765 --agent machine-a --with-antigravity-hook --with-templates
+   python -m agsync.cli install-hooks --repo /path/to/project --server http://127.0.0.1:8765 --agent agent-a --with-antigravity-hook --with-templates
+   python -m agsync.cli doctor --repo /path/to/project
    ```
-
-> **PowerShell 5.1 tip**: When passing inline JSON to `python -m agsync.cli context set`, escape inner double quotes (`'{\"port\":8765}'`) so PowerShell preserves them.
 
 ---
 
-## Verification & Diagnostics
+## Verification
 
 ```powershell
-# Run full test suite (38 tests, zero third-party dependencies)
 python -m unittest discover -s tests -v
-
-# Run end-to-end smoke check with temporary local server
 python scripts/smoke_check.py --spawn-local
-
-# Run environment, Git worktree, proxy, BOM/UTF-16, and hook diagnostics
 python -m agsync.cli doctor --repo .
 ```
 
 ---
 
-## Documentation
-- **Persian README**: [README.fa.md](README.fa.md)
-- **Full Persian Overview**: [docs/OVERVIEW.fa.md](docs/OVERVIEW.fa.md)
-- **Step-by-Step Setup Guide**: [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) | [راهنمای فارسی](docs/SETUP_GUIDE.fa.md)
-- **Architecture & Trade-offs**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- **Roadmap**: [docs/ROADMAP.fa.md](docs/ROADMAP.fa.md)
+## Documentation Index
+
+| Topic | English | فارسی |
+|---|---|---|
+| **Project Overview** | [README.md](README.md) | [README.fa.md](README.fa.md) / [docs/OVERVIEW.fa.md](docs/OVERVIEW.fa.md) |
+| **Step-by-Step Setup Guide** | [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) | [docs/SETUP_GUIDE.fa.md](docs/SETUP_GUIDE.fa.md) |
+| **Architecture & Trade-Offs** | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE.fa.md](docs/ARCHITECTURE.fa.md) |
+| **Roadmap (Phases 1–3)** | — | [docs/ROADMAP.fa.md](docs/ROADMAP.fa.md) |
+| **Evaluation Rubric** | [docs/RUBRIC.md](docs/RUBRIC.md) | — |

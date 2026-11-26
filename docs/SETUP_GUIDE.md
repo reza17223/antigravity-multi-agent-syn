@@ -1,24 +1,25 @@
-# Step-by-Step Setup Guide: Two-Machine Antigravity Coordination
+# Step-by-Step Setup Guide: Multi-Machine & Multi-Agent Coordination
 
-This guide walks two colleagues on adjacent machines (**Machine A** = LAN Hub Host, **Machine B** = Peer) through setting up real-time Antigravity coordination and conflict-free parallel editing from scratch.
+[English](SETUP_GUIDE.md) | [فارسی](SETUP_GUIDE.fa.md)
+
+This guide walks two or more colleagues (**Machine A** = LAN Hub Host, **Machine B / Peers** = Clients) through setting up `agsync` from scratch for **any MCP/CLI-compatible coding agent** (Antigravity, Claude Code, Cursor, Windsurf, Codex, Gemini CLI, etc.).
 
 > **Placeholders used below**:
-> - `<MACHINE_A_IP>`: Machine A's LAN IPv4 address (for example `192.168.1.10`, discovered in Step 2).
-> - `<AGSYNC_DIR>`: Local path where you cloned/placed `antigravity_multi_agent_sync` (for example `C:\Users\Alice\teamwork_projects\antigravity_multi_agent_sync`).
-> - `<PROJECT_DIR>`: Local path of the project repository both colleagues are building together (for example `C:\Users\Alice\projects\my_app`).
+> - `<MACHINE_A_IP>`: Machine A's LAN IPv4 address (e.g., `192.168.1.10`).
+> - `<AGSYNC_DIR>`: Local path to `antigravity_multi_agent_sync`.
+> - `<PROJECT_DIR>`: Local path to the shared project repository clone on each machine.
+> - `<SHARED_TOKEN>`: Shared Bearer secret (required when binding `0.0.0.0`).
 
 ---
 
-## Step 1: Verify Prerequisites on Both Machines
-
-Run on **Machine A** and **Machine B** (PowerShell on Windows, Terminal on macOS/Linux):
+## Step 1: Verify Prerequisites on Each Machine
 
 ```powershell
-python --version   # Must be Python 3.12+ (zero pip installs required)
-git --version      # Recommended: Git 2.30+
+python --version   # Python 3.12+ (zero third-party dependencies required)
+git --version      # Recommended: Git 2.38+ (checked by `agsync doctor`)
 ```
 
-Clone or copy `antigravity_multi_agent_sync` onto **both** machines (or at least Machine A if Machine B connects purely over Streamable HTTP `/mcp` — though having `agsync` on both machines enables local Git `pre-commit` and `PreToolUse` hooks too).
+Clone or copy `antigravity_multi_agent_sync` onto each machine.
 
 ---
 
@@ -28,55 +29,37 @@ On **Machine A**:
 
 - **Windows (PowerShell)**:
   ```powershell
-  Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notmatch 'Loopback' -and $_.IPAddress -notlike '169.254.*' } | Select-Object InterfaceAlias, IPAddress
+  Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notmatch 'Loopback|vEthernet|WSL|Tun|TAP' -and $_.IPAddress -notlike '169.254.*' } | Select-Object InterfaceAlias, IPAddress
   ```
 - **macOS / Linux**:
   ```bash
   ip -4 addr show   # or: ipconfig getifaddr en0 (macOS)
   ```
 
-Record the LAN IPv4 address (e.g., `192.168.1.10`) as `<MACHINE_A_IP>`.
-
 ---
 
-## Step 3: Open Windows Firewall on Machine A (Port 8765)
+## Step 3: Open Windows Firewall on Machine A (If Host Runs Windows)
 
-If **Machine A** runs Windows, allow incoming TCP traffic on port `8765` on your Private/LAN network profile (run in an **Administrator PowerShell**):
+Ensure your Wi-Fi/Ethernet network is set to **Private** in Windows Settings, then run in an **Administrator PowerShell** (or click **Open Firewall (Admin)** in `Start_Sync_Panel.bat`):
 
 ```powershell
 New-NetFirewallRule -DisplayName "agsync LAN Coordination Hub" -Direction Inbound -Protocol TCP -LocalPort 8765 -Profile Private -Action Allow
+New-NetFirewallRule -DisplayName "agsync LAN Discovery" -Direction Inbound -Protocol UDP -LocalPort 8766 -Profile Private -Action Allow
 ```
-
-*(Equivalent `netsh` command if preferred)*:
-```powershell
-netsh advfirewall firewall add rule name="agsync LAN Coordination Hub" dir=in action=allow protocol=TCP localport=8765 profile=private
-```
-
-> **Note**: If your Wi-Fi/Ethernet network is marked "Public" in Windows Settings, either switch it to **Private** (recommended for trusted office/home LANs) or omit `-Profile Private` while enabling `--token` authentication in Step 5.
 
 ---
 
 ## Step 4: Set Up Git Code Isolation (Cloud Remote OR 100% LAN-Only)
 
-Give **each machine its own local Git clone and its own feature branch**. Never share a `.git` folder or working directory over SMB/OneDrive/Syncthing.
+Give **each agent/machine its own local Git clone (or `git worktree`) and feature branch**. Never share a `.git` folder or working directory over SMB/OneDrive/Syncthing.
 
 ### Option A: Shared Git Remote (GitHub / GitLab / Gitea)
+- **Machine A**: `cd <PROJECT_DIR> && git checkout -b agent-a/work`
+- **Machine B**: `git clone <YOUR_REPO_URL> <PROJECT_DIR> && cd <PROJECT_DIR> && git checkout -b agent-b/work`
+
+### Option B: 100% Offline LAN-Only Git (No Internet Needed)
 On **Machine A**:
 ```powershell
-cd C:\path\to\my_app
-git checkout -b agent-a/work
-```
-On **Machine B**:
-```powershell
-git clone <YOUR_REPO_URL> C:\path\to\my_app
-cd C:\path\to\my_app
-git checkout -b agent-b/work
-```
-
-### Option B: 100% Offline LAN-Only Git (No GitHub Needed)
-If you want zero internet dependency, host a bare Git repo on **Machine A**:
-```powershell
-# On Machine A (once):
 git init --bare -b main C:\git-repos\my_app.git
 git clone C:\git-repos\my_app.git C:\projects\my_app
 cd C:\projects\my_app
@@ -84,7 +67,7 @@ git commit --allow-empty -m "chore: initial repo"
 git push -u origin HEAD:main
 git checkout -b agent-a/work
 ```
-On **Machine B** (assuming OpenSSH Server is enabled on Machine A, or shared read/write bare repo path):
+On **Machine B** (via OpenSSH on Machine A):
 ```powershell
 git clone -b main ssh://<USER_A>@<MACHINE_A_IP>/C:/git-repos/my_app.git C:\projects\my_app
 cd C:\projects\my_app
@@ -93,61 +76,58 @@ git checkout -b agent-b/work
 
 ---
 
-## Step 5: Start the `agsync` LAN Coordination Server on Machine A
+## Step 5: Start the `agsync` Hub Server on Machine A
 
-On **Machine A**, inside `<AGSYNC_DIR>`:
+> **Security rule (Phase 1)**: Binding a non-loopback address (`0.0.0.0`) requires a Bearer token (`AGSYNC_TOKEN`, `--token`, or `--auto-token`, unless explicitly passing `--allow-insecure-lan`). The SQLite WAL database defaults to `~/.agsync/state.db`.
 
 ```powershell
 cd <AGSYNC_DIR>
-python -m agsync.cli serve --host 0.0.0.0 --port 8765 --db .agsync/state.db
+$env:AGSYNC_TOKEN = "<SHARED_TOKEN>"
+python -m agsync.cli serve --host 0.0.0.0 --port 8765 --discover
 ```
 
-*(Optional shared-secret authentication — recommended on shared office networks)*:
-```powershell
-python -m agsync.cli serve --host 0.0.0.0 --port 8765 --db .agsync/state.db --token YOUR_SHARED_SECRET
-```
+*(For quick local-only testing on one machine, `python -m agsync.cli serve --host 127.0.0.1 --port 8765` works without a token.)*
 
 ### Verify Connectivity from Both Machines
-On **Machine A**:
-```powershell
-Invoke-RestMethod http://127.0.0.1:8765/health
-```
-On **Machine B** (replace `<MACHINE_A_IP>`):
-```powershell
-Invoke-RestMethod http://<MACHINE_A_IP>:8765/health
-```
-Both should return `status: ok`, `online_agents: 0`, `active_leases: 0`.
+On **Machine A**: `Invoke-RestMethod http://127.0.0.1:8765/health`  
+On **Machine B**: `Invoke-RestMethod http://<MACHINE_A_IP>:8765/health`  
+*(Note: `agsync` CLI/client automatically bypasses system proxies like v2rayN/Clash/Happ for loopback and private LAN IPs.)*
 
 ---
 
-## Step 6: Configure Antigravity MCP on Both Machines
+## Step 6: Connect Your AI Agent(s) via MCP (or CLI)
 
-Antigravity reads global MCP servers from `~/.gemini/config/mcp_config.json` (`C:\Users\<USER>\.gemini\config\mcp_config.json` on Windows).
+`agsync` exposes 13 `sync_*` tools via **Streamable HTTP (`POST /mcp`, MCP `2025-03-26`)** and **Stdio JSON-RPC (`python -m agsync.mcp_bridge`)**.
 
-Pick **either** Streamable HTTP (simplest, no local bridge process needed on Machine B) **or** Stdio Bridge (automatically binds `--agent` and env vars cleanly).
+### Option 1: Antigravity (`~/.gemini/config/mcp_config.json`)
+Run `setup-mcp` on each machine (automatically merges atomically and preserves other servers with a `.bak` backup):
+```powershell
+# Machine A
+python -m agsync.cli setup-mcp --server http://127.0.0.1:8765 --agent machine-a --token "<SHARED_TOKEN>"
 
-### Option 1: Streamable HTTP (`/mcp`, Antigravity Native)
-> **Important**: Antigravity supports Streamable HTTP (`/mcp`). Do **not** use legacy `/sse` URLs.
+# Machine B
+python -m agsync.cli setup-mcp --server http://<MACHINE_A_IP>:8765 --agent machine-b --token "<SHARED_TOKEN>"
+```
 
-Merge into `~/.gemini/config/mcp_config.json` on **Machine A** (use `127.0.0.1` and `machine-a`) and **Machine B** (use `<MACHINE_A_IP>` and `machine-b`):
+### Option 2: Claude Code / Cursor / Windsurf / Other MCP Clients
+Add either **Streamable HTTP** or **Stdio Bridge** to your client's MCP config (e.g., `.mcp.json` for Claude Code or `~/.cursor/mcp.json` for Cursor):
 
+**Streamable HTTP**:
 ```json
 {
   "mcpServers": {
     "agsync": {
-      "url": "http://<MACHINE_A_IP>:8765/mcp?agent=machine-b",
+      "url": "http://<MACHINE_A_IP>:8765/mcp?agent=claude-b",
       "headers": {
-        "X-Agent-Id": "machine-b"
+        "X-Agent-Id": "claude-b",
+        "Authorization": "Bearer <SHARED_TOKEN>"
       }
     }
   }
 }
 ```
-*(If you enabled `--token YOUR_SHARED_SECRET` on the server, add `"Authorization": "Bearer YOUR_SHARED_SECRET"` inside `"headers"`.)*
 
-### Option 2: Stdio MCP Bridge (`agsync.mcp_bridge`)
-Copy `templates/mcp_config.stdio.json` into `~/.gemini/config/mcp_config.json` on each machine, updating `PYTHONPATH`, `--server`, and `--agent` (`machine-a` on Machine A with `http://127.0.0.1:8765`, `machine-b` on Machine B with `http://<MACHINE_A_IP>:8765`):
-
+**Stdio Bridge** (for clients preferring local command transport):
 ```json
 {
   "mcpServers": {
@@ -159,103 +139,80 @@ Copy `templates/mcp_config.stdio.json` into `~/.gemini/config/mcp_config.json` o
         "--server",
         "http://<MACHINE_A_IP>:8765",
         "--agent",
-        "machine-b"
+        "claude-b"
       ],
       "env": {
         "PYTHONPATH": "<AGSYNC_DIR>",
-        "AGSYNC_TOKEN": ""
+        "AGSYNC_TOKEN": "<SHARED_TOKEN>"
       }
     }
   }
 }
 ```
 
-### Activate & Verify MCP in Antigravity
-1. In Antigravity on each machine, open **Additional Options (`...`) > MCP Servers** (or restart Antigravity) and confirm **`agsync`** shows 13 tools (`sync_status`, `sync_register`, `sync_acquire_lease`, etc.).
-2. Note that Antigravity permission grants (`~/.gemini/config/projects/<uuid>.json`) are machine-local: approve `agsync` tool calls once on Machine A and once on Machine B (or allow them in project settings).
+### Option 3: CLI-Only Agents (Codex, Shell Scripts, etc.)
+Any agent with shell access can use `python -m agsync.cli` directly:
+`register`, `status`, `inbox --unread --ack`, `task create/claim/update`, `lock`, `unlock`, `check`, `send`, `context set/get`.
 
 ---
 
-## Step 7: Install Rules, Skills, and Optional Enforcement Hooks in Your Project Repo
+## Step 7: Install Rules, Skills, and Lease Guards in `<PROJECT_DIR>`
 
-1. **Copy `AGENTS.md` and Skills into `<PROJECT_DIR>`** (and commit them to your shared repo so both machines get them):
-   ```powershell
-   Copy-Item "<AGSYNC_DIR>\templates\AGENTS.md" "<PROJECT_DIR>\AGENTS.md"
-   New-Item -ItemType Directory -Force "<PROJECT_DIR>\.agents\skills" | Out-Null
-   Copy-Item -Recurse -Force "<AGSYNC_DIR>\templates\.agents\skills\*" "<PROJECT_DIR>\.agents\skills\"
-   ```
-   This enables Antigravity's modern skills (`/sync-start`, `/sync-check`, `/sync-handoff`) and always-on `AGENTS.md` rules.
+Run on each machine/checkout (works cleanly in regular clones, `git worktree` checkouts via `--git-common-dir`, and custom `core.hooksPath`):
 
-2. **Install Hard Lease Guards (Git `pre-commit` + Antigravity `PreToolUse` hook)** locally on each machine:
-   - On **Machine A**:
-     ```powershell
-     cd <AGSYNC_DIR>
-     python -m agsync.cli install-hooks --repo "<PROJECT_DIR>" --server "http://127.0.0.1:8765" --agent machine-a --with-antigravity-hook
-     ```
-   - On **Machine B**:
-     ```powershell
-     cd <AGSYNC_DIR>
-     python -m agsync.cli install-hooks --repo "<PROJECT_DIR>" --server "http://<MACHINE_A_IP>:8765" --agent machine-b --with-antigravity-hook
-     ```
-   What this does cleanly:
-   - Writes `.git/hooks/pre-commit` calling `agsync.cli guard --staged` with exact absolute Python and script paths (so it works regardless of CWD or `PYTHONPATH`).
-   - Saves local identity in `<PROJECT_DIR>/.agsync/` and adds `.agsync/` (and `.agents/hooks.json` if not tracked in Git) to `.git/info/exclude` (never polluted in `git status` and machine-local hook paths aren't committed).
-   - Writes `<PROJECT_DIR>/.agents/hooks.json` so Antigravity's `PreToolUse` hook blocks `edit_file` / `write_file` / `replace_file_content` immediately if the peer holds an active lease on that file.
+```powershell
+# Machine A
+python -m agsync.cli install-hooks --repo "<PROJECT_DIR>" --server "http://127.0.0.1:8765" --agent machine-a --with-antigravity-hook --with-templates
+
+# Machine B
+python -m agsync.cli install-hooks --repo "<PROJECT_DIR>" --server "http://<MACHINE_A_IP>:8765" --agent machine-b --with-antigravity-hook --with-templates
+```
+
+What this sets up safely:
+- Installs `.git/hooks/pre-commit` (in `<git-common-dir>/hooks` or `core.hooksPath`) without hardcoding transient `.venv` paths.
+- Atomically merges `agsync-lease-guard` into `<PROJECT_DIR>/.agents/hooks.json` (creating `.bak` and preserving existing user hooks).
+- Copies `AGENTS.md` and `.agents/skills/sync-*` if missing, stores machine-local config under `.agsync/`, and adds `.agsync/` and `.agsync-agent` to `<git-common-dir>/info/exclude`.
+- `hook_guard` automatically protects `.agsync/**`, `.agsync-agent`, and `.agents/hooks.json` from agent edits.
 
 ---
 
 ## Step 8: Daily Collaborative Workflow
 
-1. **Both colleagues start their Antigravity sessions**:
-   - Prompt Agent A: *"Run `/sync-start` as `machine-a` on branch `agent-a/work` and split tasks with `machine-b`."*
-   - Prompt Agent B: *"Run `/sync-start` as `machine-b` on branch `agent-b/work` and check for tasks."*
-2. **Task splitting**:
-   - Agent A calls `sync_create_task(title="Implement /auth endpoint", scope_paths=["src/api/auth.py"])` and `sync_create_task(title="Build login UI", scope_paths=["src/ui/login.tsx"])`.
-   - Agent A claims task 1 (`sync_claim_task`), Agent B claims task 2. If both race for the same task, `agsync` guarantees only one wins and the other gets a clean conflict error.
-3. **Contract sharing**:
-   - Agent A publishes the auth payload schema via `sync_publish_context(key="contract:auth_api", value={"endpoint": "/api/login", "fields": ["email", "password"]})` and pings Agent B with `sync_send_message`.
-4. **Conflict-free parallel editing**:
-   - Before editing `src/api/auth.py`, Agent A calls `sync_acquire_lease(resource="src/api/auth.py")`.
-   - If Agent B accidentally tries to lease or edit `src/api/auth.py` (or parent dir `src/api`), `sync_acquire_lease` and the `PreToolUse` hook reject it with the exact holder, reason, and expiry.
-5. **Commit & Handoff**:
-   - Each agent tests and commits to its own branch, runs `/sync-handoff` (`sync_update_task`, `sync_release_lease(release_all=true)`, `sync_send_message(msg_type="handoff")`), and the two colleagues push/merge their branches cleanly in Git.
+1. **Start & Register**: Each agent calls `sync_register(agent_id=..., branch=...)`, `sync_status()`, and `sync_poll_messages(unread_only=true, auto_ack=true)`.
+2. **Split Tasks**: Create scoped tasks (`sync_create_task`) and atomically claim (`sync_claim_task`). Duplicate claims return `409 Conflict`.
+3. **Share Contracts**: Publish ports/schemas via `sync_publish_context` and notify peers via `sync_send_message`.
+4. **Lease Before Edit**: Call `sync_acquire_lease(resource=..., scope="file"|"dir"|"symbol")` before editing. Overlapping peer edits are blocked (`409` + hook guard).
+5. **Commit & Handoff**: Commit on your own branch, update task status (`sync_update_task`), release leases (`sync_release_lease(release_all=true)`), and send a `handoff` message.
+
+---
+
+## Step 9: Run `agsync doctor` & Smoke Checks
+
+```powershell
+cd <AGSYNC_DIR>
+
+# Check Python, Git >= 2.38, worktree common-dir, BOM/UTF-16, mcp_config url/serverUrl, proxy, firewall, and hook canary
+python -m agsync.cli doctor --repo "<PROJECT_DIR>"
+
+# Full automated test suite (38 tests)
+python -m unittest discover -s tests -v
+
+# Standalone end-to-end smoke check
+python scripts/smoke_check.py --spawn-local
+```
 
 ---
 
 ## Troubleshooting
 
+- **Server refuses to bind `0.0.0.0`**: Provide `AGSYNC_TOKEN` / `--token` / `--auto-token` (or `--allow-insecure-lan` for trusted private setups).
 - **Machine B cannot reach `http://<MACHINE_A_IP>:8765/health`**:
-  - Confirm `agsync` is bound to `--host 0.0.0.0` (not `127.0.0.1`).
-  - Confirm Windows Firewall rule for TCP `8765` exists and your LAN profile is `Private`.
-- **MCP tools not visible in Antigravity**:
-  - Verify `~/.gemini/config/mcp_config.json` is valid JSON (`python -m json.tool ~/.gemini/config/mcp_config.json`).
-  - Ensure you used `"url": "http://.../mcp"` (Streamable HTTP), **not** `/sse`.
-  - If using `mcp_config.stdio.json`, verify `PYTHONPATH` points to `<AGSYNC_DIR>`.
-- **Hook fails on Windows with `ModuleNotFoundError: No module named 'agsync'`**:
-  - Antigravity executes `hooks.json` with CWD = `.agents/`. Re-run `python -m agsync.cli install-hooks ... --with-antigravity-hook` so `.agents/hooks.json` embeds the full paths to `python.exe` and `hook_guard.py`.
-- **Peer machine crashed while holding a lock**:
-  - Leases auto-expire after their TTL (default 600s / 10 min). Wait for expiry or restart with a clean task split.
-- **401 Unauthorized**:
-  - Match `--token` on the server with `Authorization: Bearer <token>` (HTTP MCP), `AGSYNC_TOKEN` (Stdio/CLI), or `<PROJECT_DIR>/.agsync/token`.
-- **Windows PowerShell 5.1 JSON quoting in `agsync context set`**:
-  - Windows PowerShell 5.1 strips unescaped double quotes inside single-quoted arguments passed to native executables (`python.exe`). When publishing JSON via CLI, escape inner quotes (e.g., `python -m agsync.cli context set contract:v1 '{\"port\":8765}'`) or pass `--raw` for plain strings.
-
----
-
-## Fresh Setup & Smoke Check
-
-Verify everything works cleanly out of the box with zero third-party packages:
-
-1. **Run the full automated `unittest` suite**:
-   ```powershell
-   cd <AGSYNC_DIR>
-   python -m unittest discover -s tests -v
-   ```
-2. **Run the standalone smoke check (local isolated server)**:
-   ```powershell
-   python scripts/smoke_check.py --spawn-local
-   ```
-3. **Run the smoke check against your live Machine A LAN server** (from Machine B!):
-   ```powershell
-   python scripts/smoke_check.py --server http://<MACHINE_A_IP>:8765
-   ```
+  - Run `agsync doctor` on Machine A and check if Windows Network Category is `Public` instead of `Private`.
+  - Ensure Firewall rules for TCP `8765` and UDP `8766` exist.
+- **`401 Unauthorized` / `403 Forbidden` / `415 Unsupported Media Type`**:
+  - Verify `Authorization: Bearer <SHARED_TOKEN>` matches the hub token.
+  - Ensure mutating HTTP requests send `Content-Type: application/json` and valid local/IP `Host` headers.
+- **`400` on `GET /messages?auto_ack=1`**:
+  - `GET /messages` is strictly read-only; acknowledge messages with `POST /messages/ack` (or `SyncClient.poll_messages(..., auto_ack=True)`).
+- **PowerShell 5.1 JSON quoting in `agsync context set`**:
+  - Escape inner double quotes (`'{\"port\":8765}'`) or pass `--raw`.
