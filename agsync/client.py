@@ -8,6 +8,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from agsync.adapters.network import build_opener_for_url
+
 
 class SyncClientError(Exception):
     """Raised when an HTTP request fails or the server returns an error status."""
@@ -32,7 +34,7 @@ class SyncClientError(Exception):
 
 
 class SyncClient:
-    """Thin urllib client wrapping all agsync server REST endpoints."""
+    """Thin urllib client wrapping all agsync server REST endpoints with LAN proxy bypass."""
 
     def __init__(
         self,
@@ -44,6 +46,7 @@ class SyncClient:
         self.server_url = server_url.rstrip("/")
         self.token = token if (token and token.strip()) else None
         self.timeout = float(timeout)
+        self._opener = build_opener_for_url(self.server_url)
 
     def _request(
         self,
@@ -69,7 +72,7 @@ class SyncClient:
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with self._opener.open(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
@@ -179,17 +182,21 @@ class SyncClient:
         auto_ack: bool = False,
         limit: int = 100,
     ) -> dict[str, Any]:
-        return self._request(
+        res = self._request(
             "GET",
             "/messages",
             query={
                 "agent_id": agent_id,
                 "since_id": since_id,
                 "unread": "1" if unread_only else "0",
-                "auto_ack": "1" if auto_ack else "0",
                 "limit": limit,
             },
         )
+        if auto_ack and res.get("messages"):
+            max_id = max(int(m["id"]) for m in res["messages"])
+            ack_res = self.ack_messages(agent_id, max_id)
+            res["cursor"] = ack_res.get("last_read_msg_id", max_id)
+        return res
 
     def ack_messages(self, agent_id: str, up_to_id: int) -> dict[str, Any]:
         return self._request(

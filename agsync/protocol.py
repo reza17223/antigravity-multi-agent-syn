@@ -1,4 +1,4 @@
-"""Shared protocol constants, validation, path normalization, and MCP schemas."""
+"""Shared protocol constants, validation, path normalization, and compact MCP schemas."""
 
 from __future__ import annotations
 
@@ -172,37 +172,27 @@ def paths_overlap(norm_a: str, scope_a: str, norm_b: str, scope_b: str) -> bool:
     return False
 
 
+# Token-compact MCP tool definitions (admin/diagnostic tools stay in CLI/GUI only).
 MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "sync_status",
-        "description": (
-            "Get a live coordination snapshot: online/offline agents, open/claimed tasks, "
-            "active file/dir leases, shared context keys, and unread message count."
-        ),
+        "description": "Snapshot: agents, tasks, active leases, context keys, unread count.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "agent_id": {
-                    "type": "string",
-                    "description": "Optional agent ID to compute unread_count for.",
-                }
-            },
+            "properties": {"agent_id": {"type": "string"}},
             "additionalProperties": False,
         },
     },
     {
         "name": "sync_register",
-        "description": (
-            "Register this agent (or send a heartbeat) with machine name, role, current Git branch, "
-            "and status so the peer agent knows who is online and on which branch."
-        ),
+        "description": "Register or heartbeat agent presence, role, branch, and status.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "agent_id": {"type": "string", "description": "Unique agent ID (e.g. machine-a)."},
-                "machine_name": {"type": "string", "description": "Host/workstation name."},
-                "role": {"type": "string", "description": "Role label (e.g. backend, frontend, reviewer)."},
-                "branch": {"type": "string", "description": "Current Git branch name."},
+                "agent_id": {"type": "string"},
+                "machine_name": {"type": "string"},
+                "role": {"type": "string"},
+                "branch": {"type": "string"},
                 "status": {"type": "string", "enum": list(AGENT_STATUSES)},
                 "ttl_sec": {"type": "integer", "minimum": 10, "maximum": 3600},
             },
@@ -211,20 +201,15 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_send_message",
-        "description": (
-            "Send a real-time message to a specific peer agent_id or '*' to broadcast to all peers."
-        ),
+        "description": "Send message to peer agent_id or '*' broadcast.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "sender_id": {"type": "string", "description": "Sender agent ID (defaults to configured agent)."},
-                "recipient_id": {
-                    "type": "string",
-                    "description": "Target agent ID or '*' for broadcast.",
-                },
-                "body": {"type": "string", "description": "Message text."},
+                "sender_id": {"type": "string"},
+                "recipient_id": {"type": "string"},
+                "body": {"type": "string"},
                 "msg_type": {"type": "string", "enum": list(MSG_TYPES)},
-                "metadata": {"type": "object", "description": "Optional structured JSON metadata."},
+                "metadata": {"type": "object"},
             },
             "required": ["recipient_id", "body"],
             "additionalProperties": False,
@@ -232,7 +217,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_poll_messages",
-        "description": "Poll direct and broadcast messages for an agent, optionally filtering to unread only and auto-acking.",
+        "description": "Poll direct/broadcast messages; optionally unread_only and auto_ack.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -247,17 +232,13 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_create_task",
-        "description": "Create a shared task with optional target file/directory scope paths so peers can split work cleanly.",
+        "description": "Create shared task with optional repo-relative scope_paths.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
                 "description": {"type": "string"},
-                "scope_paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Repository-relative files or directories touched by this task.",
-                },
+                "scope_paths": {"type": "array", "items": {"type": "string"}},
                 "created_by": {"type": "string"},
                 "task_id": {"type": "string"},
             },
@@ -267,7 +248,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_claim_task",
-        "description": "Atomically claim an open task for this agent. Fails with a conflict error if already claimed by the peer.",
+        "description": "Atomically claim an open task (409 on conflict).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -280,7 +261,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_update_task",
-        "description": "Update a claimed task's status (open, claimed, in_progress, review, done, blocked) and result summary.",
+        "description": "Update task status and result_summary.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -295,14 +276,11 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_acquire_lease",
-        "description": (
-            "Acquire an exclusive TTL lease on a repository-relative file, directory, or symbol BEFORE editing. "
-            "Rejects hierarchical directory/file overlaps held by the peer."
-        ),
+        "description": "Acquire exclusive TTL lease on file/dir/symbol before editing.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "resource": {"type": "string", "description": "Repo-relative path (e.g. src/app.py or src/api)."},
+                "resource": {"type": "string"},
                 "scope": {"type": "string", "enum": list(LEASE_SCOPES), "default": "file"},
                 "owner_id": {"type": "string"},
                 "ttl_sec": {"type": "integer", "minimum": 5, "maximum": 7200},
@@ -314,7 +292,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_renew_lease",
-        "description": "Extend the TTL on an active lease held by this agent.",
+        "description": "Extend TTL on an active own lease.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -329,7 +307,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_release_lease",
-        "description": "Release one specific lease (by lease_id or resource) or all leases owned by this agent.",
+        "description": "Release one lease (lease_id/resource) or all own leases.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -344,15 +322,11 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_check_paths",
-        "description": "Pre-flight check whether one or more repo-relative paths are free, owned by self, or locked by a peer.",
+        "description": "Check if repo-relative paths are free, self-owned, or peer-locked.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                },
+                "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
                 "agent_id": {"type": "string"},
                 "scope": {"type": "string", "enum": list(LEASE_SCOPES)},
             },
@@ -362,15 +336,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_publish_context",
-        "description": (
-            "Publish or update a shared live contract/state entry (e.g. 'contract:auth_api') "
-            "with monotonic versioning and optional expected_version optimistic concurrency check."
-        ),
+        "description": "Publish shared contract/state KV with optional expected_version CAS.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "key": {"type": "string"},
-                "value": {"description": "JSON-serializable value (object, array, string, number, boolean)."},
+                "value": {},
                 "updated_by": {"type": "string"},
                 "expected_version": {"type": "integer", "minimum": 0},
             },
@@ -380,7 +351,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sync_get_context",
-        "description": "Read a specific shared context key or list all shared context entries (optionally by key prefix).",
+        "description": "Read a context key or list keys by optional prefix.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -24,14 +24,21 @@ from agsync.protocol import (
 
 
 def _log(msg: str) -> None:
-    sys.stderr.write(f"[agsync-mcp] {msg}\n")
-    sys.stderr.flush()
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(f"[agsync-mcp] {msg}\n")
+            sys.stderr.flush()
+    except OSError:
+        pass
 
 
 def _tool_result(payload: Any, *, is_error: bool = False) -> dict[str, Any]:
     return {
         "content": [
-            {"type": "text", "text": json.dumps(payload, indent=2, ensure_ascii=False)}
+            {
+                "type": "text",
+                "text": json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+            }
         ],
         "structuredContent": payload if isinstance(payload, dict) else {"result": payload},
         "isError": is_error,
