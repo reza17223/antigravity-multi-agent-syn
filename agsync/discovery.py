@@ -32,6 +32,7 @@ class DiscoveryBeacon:
         self.discovery_port = int(discovery_port)
         self.interval_sec = float(interval_sec)
         self.bind_ip = bind_ip.strip() or detect_lan_ip()
+        self.broadcast_addr = "127.0.0.1" if self.bind_ip == "127.0.0.1" else "255.255.255.255"
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -54,7 +55,7 @@ class DiscoveryBeacon:
             sock.settimeout(1.0)
             while not self._stop.is_set():
                 try:
-                    sock.sendto(self._payload(), ("255.255.255.255", self.discovery_port))
+                    sock.sendto(self._payload(), (self.broadcast_addr, self.discovery_port))
                 except OSError:
                     pass
                 self._stop.wait(self.interval_sec)
