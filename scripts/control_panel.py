@@ -202,6 +202,7 @@ class AgsyncControlPanel:
         ttk.Button(r_p2, text="Create Join Link...", command=self.create_invite_ui).pack(side="left", padx=4)
         ttk.Button(r_p2, text="Join Remote Hub...", command=self.join_remote_ui).pack(side="left", padx=4)
         ttk.Button(r_p2, text="Cloudflare Tunnel", command=self.start_tunnel_ui).pack(side="left", padx=4)
+        ttk.Button(r_p2, text="Merge Check", command=self.merge_check_ui).pack(side="left", padx=4)
 
         # 4. Live Logs Console
         log_frame = ttk.LabelFrame(self.root, text="Live Logs & Step-by-Step Error Diagnostics")
@@ -746,6 +747,23 @@ class AgsyncControlPanel:
             self.log(f"Cloudflare Tunnel started (PID={proc.pid}) for {local_url}")
         except Exception as exc:
             self.log(f"Cloudflare Tunnel error: {exc}")
+
+    def merge_check_ui(self) -> None:
+        repo_str = self.repo_var.get().strip() or str(ROOT_DIR)
+        threading.Thread(
+            target=self._merge_check_worker, args=(Path(repo_str),), daemon=True
+        ).start()
+
+    def _merge_check_worker(self, repo: Path) -> None:
+        from agsync.commands.merge_check import check_merge_tree
+        try:
+            res = check_merge_tree(repo, base="main", target="HEAD")
+            if res["clean"]:
+                self.log(f"Merge Check OK: HEAD merges cleanly into main ({res['merge_tree_oid'][:10]})")
+            else:
+                self.log(f"Merge Check CONFLICTS: {res['conflicts']}")
+        except Exception as exc:
+            self.log(f"Merge Check error: {exc}")
 
 
 def main() -> None:

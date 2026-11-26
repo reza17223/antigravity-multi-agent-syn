@@ -82,6 +82,33 @@ class TestPhase3PolishAndPackaging(unittest.TestCase):
         self.assertIn("agsync", cmds[0])
         self.assertIn("agsync-panel", cmds[1])
 
+    def test_multi_ide_setup_mcp_and_install_hooks(self) -> None:
+        import json
+        from agsync.config import configure_antigravity_mcp
+        from agsync.cli import main as cli_main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            claude_mcp = tmp_path / ".mcp.json"
+            res = configure_antigravity_mcp(
+                server_url="http://127.0.0.1:8765",
+                agent_id="claude-1",
+                ide="claude",
+                mcp_config_path=claude_mcp,
+            )
+            self.assertEqual(res["mcp_config_path"], str(claude_mcp))
+            self.assertIn("agsync", json.loads(claude_mcp.read_text(encoding="utf-8"))["mcpServers"])
+
+            repo = tmp_path / "ide_repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            rc1 = cli_main(["install-hooks", "--repo", str(repo), "--ide", "claude"])
+            self.assertEqual(rc1, 0)
+            self.assertTrue((repo / ".claude" / "settings.json").is_file())
+            rc2 = cli_main(["install-hooks", "--repo", str(repo), "--ide", "cursor"])
+            self.assertEqual(rc2, 0)
+            self.assertTrue((repo / ".cursor" / "hooks.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

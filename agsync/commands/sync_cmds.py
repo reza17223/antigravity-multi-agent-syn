@@ -96,12 +96,14 @@ def cmd_discover(args: argparse.Namespace, *, as_json: bool) -> int:
 def cmd_setup_mcp(args: argparse.Namespace, *, as_json: bool) -> int:
     server, agent, token = resolve_conn(args)
     cfg_path = Path(args.mcp_config).expanduser() if args.mcp_config else None
+    ide = getattr(args, "ide", "antigravity")
     res = configure_antigravity_mcp(
         server_url=server,
         agent_id=agent,
         mode=args.mode,
         token=token,
         mcp_config_path=cfg_path,
+        ide=ide,
     )
     print_output(res, as_json=as_json)
     return 0
@@ -171,6 +173,12 @@ def cmd_client_dispatch(args: argparse.Namespace, *, as_json: bool) -> int:
                     result_summary=args.summary,
                     force=args.force,
                 )
+                if args.status == "done":
+                    from agsync.core.ext_hooks import run_external_hooks
+                    run_external_hooks(
+                        "on_task_done",
+                        env_extra={"AGSYNC_TASK_ID": args.task_id, "AGSYNC_AGENT": agent},
+                    )
                 print_output(res, as_json=as_json)
                 return 0
 
@@ -181,6 +189,11 @@ def cmd_client_dispatch(args: argparse.Namespace, *, as_json: bool) -> int:
                 scope=args.scope,
                 ttl_sec=args.ttl,
                 reason=args.reason,
+            )
+            from agsync.core.ext_hooks import run_external_hooks
+            run_external_hooks(
+                "on_lock",
+                env_extra={"AGSYNC_RESOURCE": args.resource, "AGSYNC_AGENT": agent},
             )
             print_output(res, as_json=as_json)
             return 0

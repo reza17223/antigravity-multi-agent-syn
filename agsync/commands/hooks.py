@@ -287,6 +287,39 @@ def cmd_install_hooks(args: argparse.Namespace) -> int:
         merge_json_file(ag_hooks_path, merge_fn=_merge_hooks, create_backup=True)
         installed.append(str(ag_hooks_path))
 
+    ide = getattr(args, "ide", "antigravity")
+    if ide == "claude":
+        py_cmd = _resolve_hook_python_command()
+        proxy_cmd = f'{py_cmd} -m agsync.cli hook-proxy --host claude'
+        claude_cfg_path = repo / ".claude" / "settings.json"
+        def _merge_claude(existing: dict[str, object]) -> dict[str, object]:
+            merged = dict(existing)
+            hooks = dict(merged.get("hooks") or {}) if isinstance(merged.get("hooks"), dict) else {}
+            pre = list(hooks.get("PreToolUse") or []) if isinstance(hooks.get("PreToolUse"), list) else []
+            pre = [item for item in pre if not (isinstance(item, dict) and "agsync" in json.dumps(item))]
+            pre.append({"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "command": proxy_cmd}]})
+            hooks["PreToolUse"] = pre
+            merged["hooks"] = hooks
+            return merged
+        merge_json_file(claude_cfg_path, merge_fn=_merge_claude, create_backup=True)
+        installed.append(str(claude_cfg_path))
+    elif ide == "cursor":
+        py_cmd = _resolve_hook_python_command()
+        proxy_cmd = f'{py_cmd} -m agsync.cli hook-proxy --host cursor'
+        cursor_cfg_path = repo / ".cursor" / "hooks.json"
+        def _merge_cursor(existing: dict[str, object]) -> dict[str, object]:
+            merged = dict(existing)
+            merged.setdefault("version", 1)
+            hooks = dict(merged.get("hooks") or {}) if isinstance(merged.get("hooks"), dict) else {}
+            pre = list(hooks.get("preToolUse") or []) if isinstance(hooks.get("preToolUse"), list) else []
+            pre = [item for item in pre if not (isinstance(item, dict) and "agsync" in json.dumps(item))]
+            pre.append({"command": proxy_cmd})
+            hooks["preToolUse"] = pre
+            merged["hooks"] = hooks
+            return merged
+        merge_json_file(cursor_cfg_path, merge_fn=_merge_cursor, create_backup=True)
+        installed.append(str(cursor_cfg_path))
+
     if getattr(args, "with_templates", False):
         copied = copy_project_templates(repo)
         installed.extend(copied)

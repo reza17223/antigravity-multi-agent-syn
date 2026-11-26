@@ -99,8 +99,13 @@ def save_config(data: dict[str, Any], path: Path | None = None) -> Path:
     return cfg_path
 
 
-def default_mcp_config_path() -> Path:
-    """Return Antigravity's global MCP config path (~/.gemini/config/mcp_config.json)."""
+def default_mcp_config_path(ide: str = "antigravity") -> Path:
+    """Return global/workspace MCP config path for the target IDE."""
+    name = ide.strip().lower()
+    if name == "claude":
+        return Path.cwd() / ".mcp.json"
+    if name == "cursor":
+        return Path.home() / ".cursor" / "mcp.json"
     return Path.home() / ".gemini" / "config" / "mcp_config.json"
 
 
@@ -111,8 +116,9 @@ def configure_antigravity_mcp(
     mode: str = "http",
     token: str = "",
     mcp_config_path: Path | None = None,
+    ide: str = "antigravity",
 ) -> dict[str, Any]:
-    """Atomically merge/update the 'agsync' entry in Antigravity's mcp_config.json."""
+    """Atomically merge/update the 'agsync' entry in the target IDE's MCP config."""
     aid = validate_agent_id(agent_id)
     base_url = server_url.strip().rstrip("/")
     if not base_url.startswith(("http://", "https://")):
@@ -120,7 +126,7 @@ def configure_antigravity_mcp(
     if mode not in ("http", "stdio"):
         raise ValueError("MCP mode must be 'http' or 'stdio'")
 
-    target = mcp_config_path or default_mcp_config_path()
+    target = mcp_config_path or default_mcp_config_path(ide)
 
     if mode == "http":
         headers: dict[str, str] = {"X-Agent-Id": aid}

@@ -197,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inst.add_argument("--require-lease", action="store_true")
     p_inst.add_argument("--fail-closed", action="store_true")
     p_inst.add_argument("--force", action="store_true")
+    p_inst.add_argument("--ide", choices=["antigravity", "claude", "cursor"], default="antigravity")
 
     # doctor
     p_doc = sub.add_parser("doctor", parents=[common], help="Run environment & setup diagnostics.")
@@ -210,8 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_disc.add_argument("--port", type=int, default=DEFAULT_DISCOVERY_PORT)
 
     # setup-mcp
-    p_mcp = sub.add_parser("setup-mcp", parents=[common], help="Configure Antigravity global mcp_config.json.")
+    p_mcp = sub.add_parser("setup-mcp", parents=[common], help="Configure IDE MCP config.")
     p_mcp.add_argument("--mode", choices=["http", "stdio"], default="http")
+    p_mcp.add_argument("--ide", choices=["antigravity", "claude", "cursor"], default="antigravity")
     p_mcp.add_argument("--mcp-config", default=None, help="Override path to mcp_config.json")
 
     # state
