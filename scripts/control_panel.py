@@ -1239,18 +1239,31 @@ class AgsyncControlPanel:
     def _start_auto_sync_listener(self) -> None:
         def _loop() -> None:
             last_event_id = 0
+            last_heartbeat = 0.0
             while not self._tail_stop.is_set():
-                if not self.auto_sync_var.get():
-                    time.sleep(2.0)
-                    continue
                 url = (
                     f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
                     if self.mode_var.get() == "host"
                     else self._server_url()
                 )
                 tok = self.token_var.get().strip() or None
-                repo_val = self.repo_var.get().strip()
                 my_agent = self.agent_var.get().strip() or default_agent_id()
+
+                # Automated Heartbeat every 45s: keeps agent continuously ONLINE while panel is open
+                now = time.time()
+                if now - last_heartbeat >= 45.0:
+                    try:
+                        hb_client = SyncClient(url, token=tok, timeout=4.0)
+                        hb_client.register(my_agent, status="online", ttl_sec=120)
+                        last_heartbeat = now
+                    except Exception:
+                        pass
+
+                if not self.auto_sync_var.get():
+                    time.sleep(2.0)
+                    continue
+
+                repo_val = self.repo_var.get().strip()
                 if not repo_val or not Path(repo_val).is_dir():
                     time.sleep(3.0)
                     continue
