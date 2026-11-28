@@ -73,6 +73,7 @@ Without coordination, agents on different machines don't know what the other is 
 
 ## Learn More
 
+- **Complete Step-by-Step Tutorial**: [docs/TUTORIAL.md](docs/TUTORIAL.md) | [راهنمای جامع فارسی](docs/TUTORIAL.fa.md)
 - **Persian README**: [README.fa.md](README.fa.md)
-- **Step-by-Step Setup Guide**: [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) | [راهنمای فارسی](docs/SETUP_GUIDE.fa.md)
+- **Technical Setup Guide**: [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) | [راهنمای فنی فارسی](docs/SETUP_GUIDE.fa.md)
 - **How It Works Under the Hood**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [معماری فارسی](docs/ARCHITECTURE.fa.md)

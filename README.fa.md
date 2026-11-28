@@ -73,6 +73,7 @@
 
 ## راهنماهای بیشتر
 
+- **راهنمای گام‌به‌گام و تصویری کار با برنامه (درست و حسابی):** [docs/TUTORIAL.fa.md](docs/TUTORIAL.fa.md) | [English](docs/TUTORIAL.md)
 - **نسخه انگلیسی README:** [README.md](README.md)
-- **راهنمای گام‌به‌گام نصب:** [docs/SETUP_GUIDE.fa.md](docs/SETUP_GUIDE.fa.md) | [English](docs/SETUP_GUIDE.md)
+- **راهنمای فنی نصب و کانفیگ:** [docs/SETUP_GUIDE.fa.md](docs/SETUP_GUIDE.fa.md) | [English](docs/SETUP_GUIDE.md)
 - **معماری و پشت صحنه:** [docs/ARCHITECTURE.fa.md](docs/ARCHITECTURE.fa.md) | [English](docs/ARCHITECTURE.md)
