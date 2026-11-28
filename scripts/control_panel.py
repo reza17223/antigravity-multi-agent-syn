@@ -1195,7 +1195,7 @@ class AgsyncControlPanel:
             self.log(f"Failed to start LAN Git server: {exc}")
             messagebox.showerror("LAN Git Error", str(exc))
 
-    def pull_lan_git_ui(self) -> None:
+    def pull_lan_git_ui(self, interactive: bool = True) -> None:
         """1-Click Clone or Pull project directly from Peer's LAN Git Server (git://)."""
         hub_url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}" if self.mode_var.get() == "host" else self._server_url()
         tok = self.token_var.get().strip() or None
@@ -1210,29 +1210,36 @@ class AgsyncControlPanel:
         except Exception:
             pass
 
-        # 2. If not found in context, prompt with intelligent pre-fill
+        peer_ip = self.host_ip_var.get().strip() or "192.168.1.130"
+        repo_val = self.repo_var.get().strip() or str(ROOT_DIR)
+        repo_name = Path(repo_val).name
+        default_url = f"git://{peer_ip}:9418/{repo_name}"
+
+        # 2. If not found in context, prompt with intelligent pre-fill (or auto-use if background)
         if not discovered_git_url:
-            peer_ip = self.host_ip_var.get().strip() or "192.168.1.130"
-            repo_val = self.repo_var.get().strip() or str(ROOT_DIR)
-            repo_name = Path(repo_val).name
-            default_url = f"git://{peer_ip}:9418/{repo_name}"
-            target_url = simpledialog.askstring(
-                "Pull from Peer LAN Git",
-                "Enter Peer's LAN Git URL:\n(e.g. git://192.168.1.x:9418/repo_name)",
-                initialvalue=default_url,
-                parent=self.root,
-            )
-            if not target_url:
-                return
-            discovered_git_url = target_url.strip()
+            if interactive:
+                target_url = simpledialog.askstring(
+                    "Pull from Peer LAN Git",
+                    "Enter Peer's LAN Git URL:\n(e.g. git://192.168.1.x:9418/repo_name)",
+                    initialvalue=default_url,
+                    parent=self.root,
+                )
+                if not target_url:
+                    return
+                discovered_git_url = target_url.strip()
+            else:
+                discovered_git_url = default_url
 
         dest_val = self.repo_var.get().strip()
         if not dest_val:
-            dest_val = filedialog.askdirectory(title="Select Local Folder to Clone/Pull Into", parent=self.root)
-            if not dest_val:
+            if interactive:
+                dest_val = filedialog.askdirectory(title="Select Local Folder to Clone/Pull Into", parent=self.root)
+                if not dest_val:
+                    return
+                self.repo_var.set(dest_val)
+                self._save_current_config()
+            else:
                 return
-            self.repo_var.set(dest_val)
-            self._save_current_config()
 
         dest_path = Path(dest_val)
         self.pull_lan_git_btn.config(state="disabled")
@@ -1246,6 +1253,10 @@ class AgsyncControlPanel:
                 if (dest_path / ".git").exists():
                     self.log(f"Local repo exists. Fetching and merging latest commits from {discovered_git_url}...")
                     
+                    # Ensure persistent Git remote 'peer' is configured so git remote -v and IDE tools see it
+                    subprocess.run(["git", "remote", "remove", "peer"], cwd=str(dest_path), capture_output=True)
+                    subprocess.run(["git", "remote", "add", "peer", discovered_git_url], cwd=str(dest_path), capture_output=True)
+
                     # 0. Auto-snapshot local uncommitted/untracked files so git merge never aborts on untracked collisions
                     st_res = subprocess.run(["git", "status", "--porcelain"], cwd=str(dest_path), capture_output=True, text=True)
                     if st_res.stdout.strip():
@@ -1324,6 +1335,7 @@ class AgsyncControlPanel:
                     )
                     if res.returncode == 0:
                         out_msg = f"Project successfully cloned from {discovered_git_url} into {dest_path}!"
+                        subprocess.run(["git", "remote", "add", "peer", discovered_git_url], cwd=str(dest_path), capture_output=True)
                     else:
                         err = res.stderr.strip() or res.stdout.strip()
             except Exception as exc:
@@ -1350,13 +1362,15 @@ class AgsyncControlPanel:
                 self.pull_lan_git_btn.config(state="normal")
                 if err:
                     self.log(f"Peer LAN Git sync FAILED: {err}")
-                    messagebox.showerror("LAN Git Sync Failed", f"Could not sync from {discovered_git_url}:\n\n{err}")
+                    if interactive:
+                        messagebox.showerror("LAN Git Sync Failed", f"Could not sync from {discovered_git_url}:\n\n{err}")
                 else:
                     self.log(f"LAN Git Sync SUCCESS: {out_msg}")
-                    messagebox.showinfo(
-                        "LAN Git Sync Complete",
-                        f"Project synchronized successfully via LAN Git!\n\nOutput:\n{out_msg}",
-                    )
+                    if interactive:
+                        messagebox.showinfo(
+                            "LAN Git Sync Complete",
+                            f"Project synchronized successfully via LAN Git!\n\nOutput:\n{out_msg}",
+                        )
 
             self.root.after(0, _done)
 
@@ -1661,8 +1675,8 @@ class AgsyncControlPanel:
                                     "Sync queued (pending local task completion)."
                                 )
                             else:
-                                self.log(f"Peer '{owner}' completed task {payload.get('task_id')}. Auto-syncing changes...")
-                                pull_latest_changes(repo_val, url, token=tok, log_fn=self.log)
+                                self.log(f"Peer '{owner}' completed task {payload.get('task_id')}. Auto-syncing changes via LAN Git...")
+                                self.pull_lan_git_ui(interactive=False)
 
                         if self.pending_sync:
                             has_lease = False
@@ -1674,8 +1688,8 @@ class AgsyncControlPanel:
                                 pass
                             if not has_lease:
                                 self.pending_sync = False
-                                self.log("Local tasks clear. Running queued auto-sync...")
-                                pull_latest_changes(repo_val, url, token=tok, log_fn=self.log)
+                                self.log("Local tasks clear. Running queued auto-sync via LAN Git...")
+                                self.pull_lan_git_ui(interactive=False)
 
                 except Exception:
                     time.sleep(3.0)
