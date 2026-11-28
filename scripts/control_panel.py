@@ -385,6 +385,11 @@ class AgsyncControlPanel:
             r_sync, text="🔄 Pull / Sync Changes", command=self.sync_changes_ui
         )
         self.sync_btn.pack(side="left", padx=4)
+        self.git_daemon_proc: subprocess.Popen | None = None
+        self.git_daemon_btn = ttk.Button(
+            r_sync, text="📡 Share Git on LAN", command=self.toggle_git_daemon_ui
+        )
+        self.git_daemon_btn.pack(side="left", padx=4)
         self.auto_sync_var = tk.BooleanVar(value=True)
         self.pending_sync = False
         ttk.Checkbutton(
@@ -1062,8 +1067,55 @@ class AgsyncControlPanel:
 
         self.root.after(0, _finish)
 
+    def toggle_git_daemon_ui(self) -> None:
+        if self.git_daemon_proc is not None and self.git_daemon_proc.poll() is None:
+            self.git_daemon_proc.terminate()
+            self.git_daemon_proc = None
+            self.git_daemon_btn.config(text="📡 Share Git on LAN")
+            self.log("LAN Git Server stopped.")
+            return
+
+        repo_val = self.repo_var.get().strip() or str(ROOT_DIR)
+        repo_path = Path(repo_val).resolve()
+        if not (repo_path / ".git").exists():
+            messagebox.showerror("No Git Repo", f"'{repo_path}' is not a Git repository.")
+            return
+
+        try:
+            subprocess.run(["git", "config", "--global", "--add", "safe.directory", "*"], capture_output=True)
+            parent_dir = str(repo_path.parent)
+            repo_name = repo_path.name
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            self.git_daemon_proc = subprocess.Popen(
+                [
+                    "git",
+                    "daemon",
+                    "--reuseaddr",
+                    f"--base-path={parent_dir}",
+                    "--export-all",
+                    "--listen=0.0.0.0",
+                    "--port=9418",
+                ],
+                creationflags=flags,
+            )
+            self._job.assign_process(self.git_daemon_proc)
+            self.git_daemon_btn.config(text="⏹️ Stop LAN Git (:9418)")
+            lan_ip = self.host_ip_var.get().strip() or detect_lan_ip()
+            git_url = f"git://{lan_ip}:9418/{repo_name}"
+            self.log(f"📡 LAN Git Server running on {git_url}")
+            self.log(f"Peer can pull using: git pull {git_url} main")
+            messagebox.showinfo(
+                "LAN Git Server Active",
+                f"Repository is now shared on the local network!\n\nGit URL:\n{git_url}\n\nYour peer can connect or pull from this URL instantly without internet.",
+            )
+        except Exception as exc:
+            self.log(f"Failed to start LAN Git server: {exc}")
+            messagebox.showerror("LAN Git Error", str(exc))
+
     def _on_close(self) -> None:
         self._save_current_config()
+        if self.git_daemon_proc is not None and self.git_daemon_proc.poll() is None:
+            self.git_daemon_proc.terminate()
         if self.server_proc is not None and self.server_proc.poll() is None:
             if messagebox.askyesno("Exit", "Hub server is still running. Stop it and exit?"):
                 self.stop_server()
