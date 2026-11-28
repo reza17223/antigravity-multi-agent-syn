@@ -58,6 +58,172 @@ def check_health(url: str, timeout: float = 2.5) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def setup_universal_clipboard(root: tk.Tk) -> None:
+    """Enable universal Copy/Paste/Cut/SelectAll across all widgets, layouts (Persian/English), and right-click context menu."""
+    for keysym in ("v", "V", "Arabic_ra"):
+        try:
+            root.event_add("<<Paste>>", f"<Control-Key-{keysym}>")
+        except tk.TclError:
+            pass
+    for keysym in ("c", "C", "Arabic_zain"):
+        try:
+            root.event_add("<<Copy>>", f"<Control-Key-{keysym}>")
+        except tk.TclError:
+            pass
+    for keysym in ("x", "X", "Arabic_tah"):
+        try:
+            root.event_add("<<Cut>>", f"<Control-Key-{keysym}>")
+        except tk.TclError:
+            pass
+    for keysym in ("a", "A", "Arabic_sheen"):
+        try:
+            root.event_add("<<SelectAll>>", f"<Control-Key-{keysym}>")
+        except tk.TclError:
+            pass
+    for keysym in ("z", "Z", "Arabic_zah"):
+        try:
+            root.event_add("<<Undo>>", f"<Control-Key-{keysym}>")
+        except tk.TclError:
+            pass
+
+    def _do_paste(w: tk.Widget) -> None:
+        try:
+            text = root.clipboard_get()
+        except tk.TclError:
+            return
+        if not text:
+            return
+        if isinstance(w, (tk.Entry, ttk.Entry)):
+            try:
+                sel_start = w.index("sel.first")
+                w.delete("sel.first", "sel.last")
+                w.insert(sel_start, text)
+                w.icursor(sel_start + len(text))
+            except tk.TclError:
+                w.insert(tk.INSERT, text)
+        elif isinstance(w, tk.Text):
+            try:
+                sel_start = w.index("sel.first")
+                w.delete("sel.first", "sel.last")
+                w.insert(sel_start, text)
+                w.mark_set("insert", f"{sel_start}+{len(text)}c")
+            except tk.TclError:
+                w.insert(tk.INSERT, text)
+
+    def _do_copy(w: tk.Widget) -> None:
+        try:
+            text = ""
+            if isinstance(w, (tk.Entry, ttk.Entry)):
+                text = w.selection_get()
+            elif isinstance(w, tk.Text):
+                text = w.get("sel.first", "sel.last")
+            if text:
+                root.clipboard_clear()
+                root.clipboard_append(text)
+                root.update()
+        except tk.TclError:
+            pass
+
+    def _do_cut(w: tk.Widget) -> None:
+        _do_copy(w)
+        if isinstance(w, (tk.Entry, ttk.Entry)):
+            try:
+                w.delete("sel.first", "sel.last")
+            except tk.TclError:
+                pass
+        elif isinstance(w, tk.Text):
+            try:
+                w.delete("sel.first", "sel.last")
+            except tk.TclError:
+                pass
+
+    def _do_select_all(w: tk.Widget) -> None:
+        if isinstance(w, (tk.Entry, ttk.Entry)):
+            w.selection_range(0, tk.END)
+            w.icursor(tk.END)
+        elif isinstance(w, tk.Text):
+            w.tag_add("sel", "1.0", "end")
+
+    def _do_clear(w: tk.Widget) -> None:
+        if isinstance(w, (tk.Entry, ttk.Entry)):
+            w.delete(0, tk.END)
+        elif isinstance(w, tk.Text):
+            w.delete("1.0", tk.END)
+
+    def _on_ctrl_keypress(event: tk.Event) -> str | None:
+        is_ctrl = bool(event.state & 4) or (sys.platform == "darwin" and bool(event.state & 8))
+        if not is_ctrl:
+            return None
+        w = event.widget
+        if not isinstance(w, (tk.Entry, ttk.Entry, tk.Text)):
+            return None
+
+        ks = (event.keysym or "").lower()
+        kc = event.keycode
+
+        if kc == 86 or ks in ("v", "arabic_ra"):
+            _do_paste(w)
+            return "break"
+        elif kc == 67 or ks in ("c", "arabic_zain"):
+            _do_copy(w)
+            return "break"
+        elif kc == 88 or ks in ("x", "arabic_tah"):
+            _do_cut(w)
+            return "break"
+        elif kc == 65 or ks in ("a", "arabic_sheen"):
+            _do_select_all(w)
+            return "break"
+        return None
+
+    ctx_menu = tk.Menu(root, tearoff=0)
+
+    def _show_context_menu(event: tk.Event) -> None:
+        w = event.widget
+        w.focus_set()
+        ctx_menu.delete(0, tk.END)
+
+        if isinstance(w, (tk.Entry, ttk.Entry)):
+            if not w.selection_present():
+                w.icursor(f"@{event.x}")
+            has_sel = bool(w.selection_present())
+            is_readonly = str(w.cget("state")) in ("readonly", "disabled")
+        elif isinstance(w, tk.Text):
+            if not w.tag_ranges("sel"):
+                w.mark_set("insert", f"@{event.x},{event.y}")
+            has_sel = bool(w.tag_ranges("sel"))
+            is_readonly = str(w.cget("state")) in ("disabled",)
+        else:
+            has_sel = False
+            is_readonly = False
+
+        try:
+            has_clip = bool(root.clipboard_get())
+        except tk.TclError:
+            has_clip = False
+
+        state_sel = tk.NORMAL if (has_sel and not is_readonly) else tk.DISABLED
+        state_copy = tk.NORMAL if has_sel else tk.DISABLED
+        state_paste = tk.NORMAL if (has_clip and not is_readonly) else tk.DISABLED
+
+        ctx_menu.add_command(label="Cut   (Ctrl+X)", state=state_sel, command=lambda: _do_cut(w))
+        ctx_menu.add_command(label="Copy  (Ctrl+C)", state=state_copy, command=lambda: _do_copy(w))
+        ctx_menu.add_command(label="Paste (Ctrl+V)", state=state_paste, command=lambda: _do_paste(w))
+        ctx_menu.add_separator()
+        ctx_menu.add_command(label="Select All (Ctrl+A)", command=lambda: _do_select_all(w))
+        if not is_readonly:
+            ctx_menu.add_command(label="Clear", command=lambda: _do_clear(w))
+
+        try:
+            ctx_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            ctx_menu.grab_release()
+
+    for cls in ("Entry", "TEntry", "Text"):
+        root.bind_class(cls, "<Button-3>", _show_context_menu)
+        root.bind_class(cls, "<KeyPress>", _on_ctrl_keypress, add="+")
+        root.bind_class(cls, "<<SelectAll>>", lambda e: _do_select_all(e.widget))
+
+
 class AgsyncControlPanel:
     def __init__(self, root: tk.Tk, initial_mode: str | None = None) -> None:
         self.root = root
@@ -76,6 +242,7 @@ class AgsyncControlPanel:
         self.log_queue: queue.Queue[str] = queue.Queue()
 
         self._build_ui()
+        setup_universal_clipboard(self.root)
         self._apply_mode_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_logs()
@@ -139,6 +306,7 @@ class AgsyncControlPanel:
         ttk.Button(net_btns, text="Discover LAN Hub", command=self.discover_lan).pack(side="left", padx=3)
         ttk.Button(net_btns, text="Generate Token", command=self._generate_token).pack(side="left", padx=3)
         ttk.Button(net_btns, text="Copy Token", command=self._copy_token).pack(side="left", padx=3)
+        ttk.Button(net_btns, text="📋 Paste Token", command=self._paste_token).pack(side="left", padx=3)
         ttk.Button(net_btns, text="Save Config", command=self._save_current_config).pack(side="left", padx=3)
 
         # 2. Hub & Diagnostics Controls
@@ -185,6 +353,7 @@ class AgsyncControlPanel:
         self.repo_var = tk.StringVar(value=str(self.cfg.get("repo_path", "")))
         ttk.Entry(r_repo, textvariable=self.repo_var).pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(r_repo, text="Browse...", command=self._browse_repo).pack(side="left", padx=4)
+        ttk.Button(r_repo, text="📋 Paste Path", command=self._paste_repo_path).pack(side="left", padx=4)
 
         r_setup = ttk.Frame(ag_frame)
         r_setup.pack(fill="x", padx=6, pady=4)
@@ -273,6 +442,18 @@ class AgsyncControlPanel:
         self.root.clipboard_append(tok)
         self.root.update()
         self.log("Bearer token copied to clipboard.")
+
+    def _paste_token(self) -> None:
+        try:
+            tok = self.root.clipboard_get().strip()
+            if not tok:
+                messagebox.showinfo("Clipboard Empty", "Clipboard has no text.")
+                return
+            self.token_var.set(tok)
+            self._save_current_config()
+            self.log("Pasted Bearer token from clipboard and saved config.")
+        except Exception as exc:
+            messagebox.showwarning("Clipboard Error", f"Could not read clipboard: {exc}")
 
     def _save_current_config(self) -> None:
         port_raw = self.port_var.get().strip() or "8765"
@@ -600,6 +781,18 @@ class AgsyncControlPanel:
         if chosen:
             self.repo_var.set(chosen)
             self._save_current_config()
+
+    def _paste_repo_path(self) -> None:
+        try:
+            val = self.root.clipboard_get().strip().strip('"').strip("'")
+            if not val:
+                messagebox.showinfo("Clipboard Empty", "Clipboard has no text.")
+                return
+            self.repo_var.set(val)
+            self._save_current_config()
+            self.log(f"Pasted Project Repo path from clipboard: {val}")
+        except Exception as exc:
+            messagebox.showwarning("Clipboard Error", f"Could not read clipboard: {exc}")
 
     def connect_mcp(self) -> None:
         self._save_current_config()
