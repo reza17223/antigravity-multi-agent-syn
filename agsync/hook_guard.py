@@ -257,6 +257,53 @@ def evaluate_hook_payload(
     return {"decision": "allow"}
 
 
+def release_all_for_agent(
+    payload: dict[str, Any],
+    *,
+    server_url: str | None = None,
+    agent_id: str | None = None,
+    token: str | None = None,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    """Release all active leases for the current agent (used on Stop hook / turn completion)."""
+    raw_cwd = payload.get("cwd")
+    ws_list = payload.get("workspacePaths") or []
+    if not raw_cwd:
+        raw_cwd = ws_list[0] if isinstance(ws_list, list) and ws_list else os.getcwd()
+    cwd_path = Path(_logical_abs(str(raw_cwd)))
+    repo_root = _find_repo_root_strict(cwd_path) or cwd_path
+
+    eff_server = (
+        server_url
+        or os.environ.get("AGSYNC_SERVER")
+        or _read_local_setting(repo_root, (".agsync/server_url",))
+        or "http://127.0.0.1:8765"
+    )
+    eff_agent = (
+        agent_id
+        or os.environ.get("AGSYNC_AGENT")
+        or _read_local_setting(repo_root, (".agsync-agent", ".agsync/agent_id"))
+        or socket.gethostname()
+    )
+    eff_token = (
+        token
+        or os.environ.get("AGSYNC_TOKEN")
+        or _read_local_setting(repo_root, (".agsync/token",))
+        or ""
+    )
+
+    try:
+        client = SyncClient(eff_server, token=eff_token or None, timeout=timeout)
+        client.release_lease(eff_agent, release_all=True)
+    except Exception as exc:
+        try:
+            sys.stderr.write(f"[agsync-hook] Notice: release_all on stop skipped/failed: {exc}\n")
+        except OSError:
+            pass
+
+    return {}
+
+
 def _read_stdin_text() -> str:
     buf = getattr(sys.stdin, "buffer", None)
     if buf is not None:
@@ -284,6 +331,11 @@ def main(argv: list[str] | None = None) -> int:
             action="store_true",
             help="Require this agent to already hold an active lease before allowing edit/write.",
         )
+        parser.add_argument(
+            "--release-all",
+            action="store_true",
+            help="Release all active leases for this agent (used in Stop hook or cleanup).",
+        )
         parser.add_argument("--timeout", type=float, default=2.0)
         args = parser.parse_args(argv)
         fail_closed = bool(args.fail_closed)
@@ -292,13 +344,27 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.reconfigure(encoding="utf-8")
 
         raw_stdin = _read_stdin_text().lstrip("\ufeff").strip()
-        if not raw_stdin:
-            out: dict[str, Any] = {"decision": "allow"}
+        payload: dict[str, Any] = {}
+        if raw_stdin:
+            try:
+                parsed = json.loads(raw_stdin)
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except json.JSONDecodeError:
+                pass
+
+        if args.release_all:
+            out = release_all_for_agent(
+                payload,
+                server_url=args.server,
+                agent_id=args.agent,
+                token=args.token,
+                timeout=args.timeout,
+            )
+        elif not raw_stdin:
+            out = {"decision": "allow"}
         else:
             try:
-                payload = json.loads(raw_stdin)
-                if not isinstance(payload, dict):
-                    payload = {}
                 out = evaluate_hook_payload(
                     payload,
                     server_url=args.server,
@@ -308,9 +374,9 @@ def main(argv: list[str] | None = None) -> int:
                     require_lease=args.require_lease,
                     timeout=args.timeout,
                 )
-            except json.JSONDecodeError as exc:
+            except Exception as exc:
                 out = (
-                    {"decision": "deny", "reason": f"Invalid hook stdin JSON: {exc}"}
+                    {"decision": "deny", "reason": f"agsync hook_guard error: {exc}"}
                     if fail_closed
                     else {"decision": "allow"}
                 )

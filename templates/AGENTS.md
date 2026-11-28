@@ -2,8 +2,9 @@
 
 > [!CRITICAL]
 > **STRICT HARD-ENFORCEMENT ACTIVE (`--require-lease`):**
-> Any attempt to edit or modify files without first holding an active lease is BLOCKED at the IDE hook level and will immediately fail.
-> You MUST call `sync_acquire_lease` BEFORE calling `edit_file`, `write_file`, or saving code.
+> 1. Any attempt to edit or modify files without first holding an active lease is BLOCKED at the IDE hook level and will immediately fail.
+> 2. You MUST call `sync_acquire_lease` BEFORE calling `edit_file`, `write_file`, or saving code.
+> 3. **MANDATORY LEASE RELEASE:** Immediately after finishing your file edits or before sending your response to the user, you MUST call `sync_release_lease(owner_id=..., release_all=true)`! NEVER leave files locked when finishing your turn.
 
 You are working on a shared repository alongside one or more peer AI agents (Antigravity, Claude Code, Cursor, Windsurf, Codex, Gemini CLI, or custom agents) on separate checkouts or machines.
 Each agent works in its own local Git checkout and branch — there is no built-in cross-machine live edit or lock sync. Follow this protocol on every task.
@@ -20,14 +21,14 @@ Each agent works in its own local Git checkout and branch — there is no built-
    - Atomically claim your task via `sync_claim_task` and move it to `in_progress` via `sync_update_task`.
    - If `sync_claim_task` returns a conflict error, **STOP** — do not duplicate the peer's task. Pick another open task or message your peer via `sync_send_message`.
 
-3. **Acquire Exclusive Lease BEFORE Any File Edit**
+3. **Acquire Lease BEFORE Edit & Release IMMEDIATELY After**
    - Before modifying any file, call `sync_acquire_lease` on the repository-relative path (or directory with `scope: "dir"`).
    - If `sync_acquire_lease` returns `lease_conflict`:
      - **DO NOT edit or overwrite the file.**
      - Work on a non-overlapping file, or notify your peer via `sync_send_message` and wait for release.
    - **Do NOT bypass file-edit guards via shell redirections or inline scripts** (`Set-Content`, `>`, `sed -i`, `python -c`) to edit repository files without holding a lease.
    - **Do NOT modify protected agsync files** (`.agsync/**`, `.agsync-agent`, `.agents/hooks.json`).
-   - Renew long-running leases with `sync_renew_lease` if your work exceeds the default 10-minute TTL.
+   - **RELEASE ON FINISH:** As soon as you finish editing the file(s), call `sync_release_lease(release_all=true)` so your peer agent is not blocked.
 
 4. **Publish Shared Contracts & Decisions**
    - Whenever you define or change an API route, payload schema, port, or shared interface, publish it immediately via `sync_publish_context` (e.g. key `contract:api_v1`) and notify peers with `sync_send_message(msg_type="contract")`.

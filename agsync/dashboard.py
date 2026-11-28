@@ -251,8 +251,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </section>
 
         <section class="card" aria-labelledby="leases-heading">
-          <div class="card-header">
+          <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
             <h2 id="leases-heading">Active File &amp; Scope Leases <span class="badge warn" id="leases-count">0</span></h2>
+            <button class="btn btn-sm btn-subtle" onclick="releaseAllLeases()" title="Release all file locks">🔓 Unlock All</button>
           </div>
           <div id="leases-body"></div>
         </section>
@@ -702,13 +703,50 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById("leases-count").textContent = String(items.length);
       const el = document.getElementById("leases-body");
       if (!items.length) { el.innerHTML = '<p class="empty">No active leases. All files are unlocked.</p>'; return; }
-      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Resource</th><th>Scope</th><th>Owner</th><th>Reason</th></tr></thead><tbody>' +
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Resource</th><th>Scope</th><th>Owner</th><th>Reason</th><th style="width:100px;">Action</th></tr></thead><tbody>' +
         items.map(l => `<tr>
           <td><code>${esc(l.resource_norm)}</code></td>
           <td>${esc(l.scope)}</td>
           <td><code>${esc(l.owner_id)}</code></td>
           <td>${esc(l.reason || "-")}</td>
+          <td><button class="btn btn-sm btn-warn" onclick="releaseLease('${esc(l.lease_id)}', '${esc(l.owner_id)}')">🔓 Unlock</button></td>
         </tr>`).join("") + "</tbody></table></div>";
+    }
+
+    async function releaseLease(leaseId, ownerId) {
+      try {
+        const res = await fetch("/leases/release", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lease_id: leaseId, owner_id: ownerId })
+        });
+        if (res.ok) {
+          fetchSnapshot();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert("Could not release lease: " + (err.error || err.message || res.statusText));
+        }
+      } catch (e) {
+        alert("Unlock error: " + e);
+      }
+    }
+
+    async function releaseAllLeases() {
+      if (!confirm("Release all active leases across all agents?")) return;
+      try {
+        const snap = await (await fetch("/snapshot")).json();
+        const leases = snap.active_leases || [];
+        for (const l of leases) {
+          await fetch("/leases/release", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ lease_id: l.lease_id, owner_id: l.owner_id })
+          });
+        }
+        fetchSnapshot();
+      } catch (e) {
+        alert("Error unlocking all: " + e);
+      }
     }
 
     function renderTasks(items) {

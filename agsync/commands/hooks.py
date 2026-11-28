@@ -356,6 +356,7 @@ def cmd_install_hooks(args: argparse.Namespace) -> int:
             cmd_parts.append("--require-lease")
         hook_command = " ".join(cmd_parts)
 
+        stop_command = f'"{py_cmd}" "{hook_guard_py}" --release-all' if " " in py_cmd else f'{py_cmd} "{hook_guard_py}" --release-all'
         ag_hooks_path = repo / ".agents" / "hooks.json"
         lease_guard_entry = {
             "PreToolUse": [
@@ -369,7 +370,14 @@ def cmd_install_hooks(args: argparse.Namespace) -> int:
                         }
                     ],
                 }
-            ]
+            ],
+            "Stop": [
+                {
+                    "type": "command",
+                    "command": stop_command,
+                    "timeout": 5,
+                }
+            ],
         }
 
         def _merge_hooks(existing: dict[str, object]) -> dict[str, object]:

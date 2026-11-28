@@ -405,6 +405,11 @@ class AgsyncControlPanel:
         self.clone_btn = self.sync_btn
         self.pull_lan_git_btn = self.sync_btn
 
+        self.unlock_btn = ttk.Button(
+            r_sync, text="🔓 Release Leases", command=self.release_leases_ui
+        )
+        self.unlock_btn.pack(side="left", padx=4)
+
         self.auto_sync_var = tk.BooleanVar(value=True)
         self.pending_sync = False
         ttk.Checkbutton(
@@ -1306,6 +1311,25 @@ class AgsyncControlPanel:
             self.root.after(0, _done)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def release_leases_ui(self) -> None:
+        """1-Click release all active leases owned by this agent (or force all on Hub)."""
+        hub_url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}" if self.mode_var.get() == "host" else self._server_url()
+        tok = self.token_var.get().strip() or None
+        my_agent = self.agent_id_var.get().strip() or socket.gethostname()
+        try:
+            client = SyncClient(hub_url, token=tok, timeout=3.0)
+            res = client.release_lease(my_agent, release_all=True)
+            cnt = res.get("released_count", 0)
+            self.log(f"🔓 Leases released for agent '{my_agent}': {cnt} file(s) unlocked.")
+            messagebox.showinfo(
+                "Leases Released",
+                f"Successfully unlocked {cnt} file(s) owned by '{my_agent}'!\n\nAll files are now open for peer edits.",
+                parent=self.root,
+            )
+        except Exception as exc:
+            self.log(f"Failed to release leases: {exc}")
+            messagebox.showerror("Unlock Error", f"Could not release leases:\n{exc}", parent=self.root)
 
     def _on_close(self) -> None:
         self._save_current_config()
