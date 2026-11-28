@@ -355,8 +355,6 @@ def cmd_install_hooks(args: argparse.Namespace) -> int:
         if args.require_lease:
             cmd_parts.append("--require-lease")
         hook_command = " ".join(cmd_parts)
-        if os.name == "nt":
-            hook_command = f"call {hook_command}"
 
         ag_hooks_path = repo / ".agents" / "hooks.json"
         lease_guard_entry = {

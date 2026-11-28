@@ -138,6 +138,18 @@ class TestExtensions(unittest.TestCase):
             self.assertTrue((repo / ".agents" / "skills" / "sync-start" / "SKILL.md").is_file())
             self.assertGreaterEqual(len(copied), 4)
 
+            # Verify existing custom AGENTS.md preserves content and appends agsync rules
+            repo_custom = tmp_path / "repo_custom"
+            repo_custom.mkdir()
+            subprocess.run(["git", "init"], cwd=repo_custom, check=True, capture_output=True)
+            custom_agents = repo_custom / "AGENTS.md"
+            custom_agents.write_text("# Project Custom Rules\n- Only PHP", encoding="utf-8")
+            copied_custom = copy_project_templates(repo_custom)
+            updated_text = custom_agents.read_text(encoding="utf-8")
+            self.assertIn("# Project Custom Rules", updated_text)
+            self.assertIn("Multi-Agent & Multi-IDE Coordination Rules", updated_text)
+            self.assertIn(str(custom_agents), copied_custom)
+
     def test_discovery_beacon_roundtrip(self) -> None:
         port = _free_udp_port()
         beacon = DiscoveryBeacon(

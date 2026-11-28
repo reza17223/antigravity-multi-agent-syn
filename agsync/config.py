@@ -186,9 +186,17 @@ def copy_project_templates(repo: Path, *, overwrite_agents_md: bool = False) -> 
     copied: list[str] = []
     agents_src = TEMPLATES_DIR / "AGENTS.md"
     agents_dst = target_repo / "AGENTS.md"
-    if agents_src.is_file() and (overwrite_agents_md or not agents_dst.exists()):
-        shutil.copy2(agents_src, agents_dst)
-        copied.append(str(agents_dst))
+    if agents_src.is_file():
+        if overwrite_agents_md or not agents_dst.exists():
+            shutil.copy2(agents_src, agents_dst)
+            copied.append(str(agents_dst))
+        elif agents_dst.exists():
+            existing_content = agents_dst.read_text(encoding="utf-8", errors="replace")
+            if "Multi-Agent & Multi-IDE Coordination Rules" not in existing_content and "agsync" not in existing_content:
+                template_content = agents_src.read_text(encoding="utf-8")
+                updated_content = existing_content.rstrip() + "\n\n" + template_content.strip() + "\n"
+                agents_dst.write_text(updated_content, encoding="utf-8")
+                copied.append(str(agents_dst))
 
     skills_src = TEMPLATES_DIR / ".agents" / "skills"
     if skills_src.is_dir():

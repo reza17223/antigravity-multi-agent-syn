@@ -225,8 +225,7 @@ class TestCLISmokeAndTemplates(unittest.TestCase):
             self.assertEqual(inst.returncode, 0, inst.stderr)
             hook_cfg = json.loads((repo / ".agents" / "hooks.json").read_text(encoding="utf-8"))
             hook_cmd = hook_cfg["agsync-lease-guard"]["PreToolUse"][0]["hooks"][0]["command"]
-            if os.name == "nt":
-                self.assertTrue(hook_cmd.startswith("call "), f"Missing 'call ' prefix: {hook_cmd}")
+            self.assertIn("python", hook_cmd)
 
             payload_allow = json.dumps(
                 {
