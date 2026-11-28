@@ -197,12 +197,45 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def check_github_update() -> dict[str, Any]:
-    """Check GitHub for newer versions of agsync using git, API, or raw file."""
+def check_github_update(peer_ip: str | None = None) -> dict[str, Any]:
+    """Check LAN Peer first, then GitHub for newer versions of agsync."""
     cur_ver = get_current_version().lstrip("v").strip()
     proxy = detect_system_proxy()
 
-    # 1. If inside a Git clone, check via git first
+    # 0. Priority: Check LAN Peer directly over local network (ultra-fast, zero-internet)
+    if (ROOT_DIR / ".git").exists() and peer_ip:
+        lan_url = f"git://{peer_ip}:9418/antigravity_multi_agent_sync"
+        try:
+            head_proc = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+            )
+            local_sha = head_proc.stdout.strip()
+            lan_proc = subprocess.run(
+                ["git", "ls-remote", lan_url, "refs/heads/main"],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+            )
+            if lan_proc.returncode == 0 and lan_proc.stdout.strip():
+                lan_sha = lan_proc.stdout.split()[0].strip()
+                if local_sha and lan_sha and local_sha != lan_sha:
+                    return {
+                        "has_update": True,
+                        "latest_version": f"LAN-{lan_sha[:7]}",
+                        "current_version": cur_ver,
+                        "via_lan": True,
+                        "peer_ip": peer_ip,
+                        "tag_name": lan_sha[:7],
+                    }
+        except Exception:
+            pass
+
+    # 1. If inside a Git clone, check via GitHub git origin
     if (ROOT_DIR / ".git").exists():
         try:
             env = os.environ.copy()

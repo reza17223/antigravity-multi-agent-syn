@@ -449,13 +449,15 @@ class AgsyncControlPanel:
         self.root.after(1500, self._start_bg_update_check)
 
     def _start_bg_update_check(self) -> None:
+        peer_ip = self.host_ip_var.get().strip() or None
+
         def _check() -> None:
             try:
                 from scripts.updater import check_github_update
-                info = check_github_update()
+                info = check_github_update(peer_ip=peer_ip)
                 if info.get("has_update"):
                     latest = info.get("latest_version")
-                    self.root.after(0, lambda: self.update_btn.config(text=f"🔥 Update v{latest} Available!"))
+                    self.root.after(0, lambda: self.update_btn.config(text=f"🔥 Update {latest} Available!"))
             except Exception:
                 pass
 
@@ -1687,7 +1689,7 @@ class AgsyncControlPanel:
         def _worker() -> None:
             from scripts.updater import check_github_update, perform_update
 
-            info = check_github_update()
+            info = check_github_update(peer_ip=peer_ip)
             if info.get("error"):
                 self.log(f"Update check notice: {info['error']}")
 
