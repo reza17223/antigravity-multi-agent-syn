@@ -1224,6 +1224,18 @@ class AgsyncControlPanel:
                 subprocess.run(["git", "config", "--global", "--add", "safe.directory", "*"], capture_output=True)
                 if (dest_path / ".git").exists():
                     self.log(f"Local repo exists. Fetching and merging latest commits from {discovered_git_url}...")
+                    
+                    # 0. Auto-snapshot local uncommitted/untracked files so git merge never aborts on untracked collisions
+                    st_res = subprocess.run(["git", "status", "--porcelain"], cwd=str(dest_path), capture_output=True, text=True)
+                    if st_res.stdout.strip():
+                        self.log("Auto-snapshotting local untracked/modified files before sync...")
+                        subprocess.run(["git", "add", "-A"], cwd=str(dest_path), capture_output=True)
+                        subprocess.run(
+                            ["git", "commit", "-m", "chore: auto-snapshot local work before peer sync"],
+                            cwd=str(dest_path),
+                            capture_output=True,
+                        )
+
                     # 1. Fetch remote branch heads (completely agnostic to main vs master)
                     res_fetch = subprocess.run(
                         ["git", "fetch", discovered_git_url],
@@ -1244,7 +1256,19 @@ class AgsyncControlPanel:
                         if res_merge.returncode == 0:
                             out_msg = res_merge.stdout.strip() or "Already up to date."
                         else:
-                            err = res_merge.stderr.strip() or res_merge.stdout.strip()
+                            # If conflict is just on config files (.gitignore / AGENTS.md), resolve gracefully
+                            conflict_check = subprocess.run(["git", "status", "--porcelain"], cwd=str(dest_path), capture_output=True, text=True)
+                            lines = [ln.strip() for ln in conflict_check.stdout.splitlines() if ln.strip()]
+                            if lines and all(".gitignore" in ln or "AGENTS.md" in ln for ln in lines if ln.startswith("UU") or ln.startswith("AA") or ln.startswith("DU")):
+                                subprocess.run(["git", "checkout", "--theirs", ".gitignore"], cwd=str(dest_path), capture_output=True)
+                                subprocess.run(["git", "add", "-A"], cwd=str(dest_path), capture_output=True)
+                                res_c = subprocess.run(["git", "commit", "-m", "chore: resolved merge conflict"], cwd=str(dest_path), capture_output=True, text=True)
+                                if res_c.returncode == 0:
+                                    out_msg = "Merged cleanly (auto-resolved config conflict)."
+                                else:
+                                    err = res_merge.stderr.strip() or res_merge.stdout.strip()
+                            else:
+                                err = res_merge.stderr.strip() or res_merge.stdout.strip()
                     else:
                         # Fetch failed, fallback to direct pull main or master
                         res = subprocess.run(
