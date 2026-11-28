@@ -601,6 +601,14 @@ class AgsyncControlPanel:
             return
         self._save_current_config()
         repo = Path(repo_str)
+        auto_git_init = False
+        if repo.is_dir() and not (repo / ".git").exists():
+            if not messagebox.askyesno(
+                "Initialize Git Repository?",
+                f"'{repo}' is not a Git repository yet.\n\nRun 'git init -b main' automatically and install agsync hooks?",
+            ):
+                return
+            auto_git_init = True
         url = (
             f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
             if self.mode_var.get() == "host"
@@ -612,11 +620,33 @@ class AgsyncControlPanel:
         self.log(f"Installing repo hooks & templates in {repo}...")
         threading.Thread(
             target=self._attach_repo_worker,
-            args=(repo, url, agent, tok),
+            args=(repo, url, agent, tok, auto_git_init),
             daemon=True,
         ).start()
 
-    def _attach_repo_worker(self, repo: Path, url: str, agent: str, tok: str) -> None:
+    def _attach_repo_worker(
+        self, repo: Path, url: str, agent: str, tok: str, auto_git_init: bool = False
+    ) -> None:
+        if auto_git_init:
+            try:
+                init_res = subprocess.run(
+                    ["git", "init", "-b", "main"],
+                    cwd=str(repo),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if init_res.returncode == 0:
+                    self.log(f"Initialized Git repository in {repo} (branch: main)")
+                else:
+                    err_init = init_res.stderr.strip() or init_res.stdout.strip()
+                    self.root.after(0, lambda: self.attach_btn.config(state="normal"))
+                    self.root.after(0, lambda: messagebox.showerror("Git Init Failed", err_init))
+                    return
+            except Exception as exc:
+                self.root.after(0, lambda: self.attach_btn.config(state="normal"))
+                self.root.after(0, lambda: messagebox.showerror("Git Init Failed", str(exc)))
+                return
         cmd = [
             sys.executable,
             "-m",
