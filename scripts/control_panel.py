@@ -1219,6 +1219,18 @@ class AgsyncControlPanel:
             except Exception as exc:
                 err = str(exc)
 
+            if err and ("Connection refused" in err or "unable to connect" in err):
+                self.log("LAN Git (:9418) not active on peer. Falling back to Hub Server (:8765)...")
+                hub_res = pull_latest_changes(dest_path, hub_url, token=tok, log_fn=self.log)
+                if hub_res.get("status") == "ok":
+                    err = None
+                    out_msg = f"Synced via Hub: {hub_res.get('output', 'Already up to date.')}"
+                elif hub_res.get("status") == "busy":
+                    err = None
+                    out_msg = f"Sync postponed: {hub_res.get('message')}"
+                elif hub_res.get("message"):
+                    err = f"LAN Git refused and Hub sync notice: {hub_res.get('message')}"
+
             def _done() -> None:
                 self.pull_lan_git_btn.config(state="normal")
                 if err:
