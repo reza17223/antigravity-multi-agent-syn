@@ -287,11 +287,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <label for="feed-filter">فیلتر</label>
             <select id="feed-filter" style="min-height:36px;font-size:13px;">
               <option value="all">رویدادهای تیمی (Team Activities)</option>
-              <option value="message">💬 پیام‌ها (Messages)</option>
-              <option value="lease">🔒 قفل و آزادسازی فایل‌ها (Leases)</option>
-              <option value="task">📋 تسک‌ها (Tasks)</option>
-              <option value="agent">👤 حضور ایجنت‌ها (Agents)</option>
-              <option value="raw">⚙️ همه رویدادها شامل سیستمی (All Raw)</option>
+              <option value="message">[Messages] پیام‌ها</option>
+              <option value="lease">[Leases] قفل و آزادسازی فایل‌ها</option>
+              <option value="task">[Tasks] تسک‌ها</option>
+              <option value="agent">[Agents] حضور ایجنت‌ها</option>
+              <option value="raw">[All Raw] همه رویدادها شامل سیستمی</option>
             </select>
           </div>
         </div>
@@ -321,15 +321,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let feedItems = [];
     const seenEventIds = new Set();
 
-    const savedTok = sessionStorage.getItem("agsync_token") || "";
+    const savedTok = (typeof sessionStorage !== "undefined" && sessionStorage.getItem("agsync_token")) || "";
     if (savedTok) tokenInput.value = savedTok;
-    const urlParams = new URLSearchParams(window.location.search);
-    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    const paramTok = urlParams.get("token") || hashParams.get("token");
-    if (paramTok) {
-      tokenInput.value = paramTok;
-      sessionStorage.setItem("agsync_token", paramTok);
-    }
+    try {
+      if (typeof window !== "undefined" && window.location) {
+        const urlParams = new URLSearchParams(window.location.search || "");
+        const hashParams = new URLSearchParams((window.location.hash || "").replace(/^#/, ""));
+        const paramTok = urlParams.get("token") || hashParams.get("token");
+        if (paramTok) {
+          tokenInput.value = paramTok;
+          if (typeof sessionStorage !== "undefined") sessionStorage.setItem("agsync_token", paramTok);
+        }
+      }
+    } catch (_e) {}
 
     function getAuthHeaders() {
       const headers = {};
@@ -359,14 +363,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function formatEventBadge(evType) {
       const t = String(evType || "");
-      if (t === "message_sent") return '<span class="badge info">💬 پیام جدید</span>';
-      if (t === "lease_acquired") return '<span class="badge warn">🔒 قفل فایل</span>';
-      if (t === "lease_released") return '<span class="badge ok">🔓 آزادسازی قفل</span>';
-      if (t === "lease_expired") return '<span class="badge danger">⏰ انقضای قفل</span>';
-      if (t === "agent_registered") return '<span class="badge ok">👤 حضور ایجنت</span>';
-      if (t === "task_created") return '<span class="badge ok">📋 تسک جدید</span>';
-      if (t === "task_updated") return '<span class="badge info">📝 آپدیت تسک</span>';
-      if (t === "messages_acked") return '<span class="badge" style="opacity:0.6;">✓ تایید دریافت</span>';
+      if (t === "message_sent") return '<span class="badge info">پیام جدید</span>';
+      if (t === "lease_acquired") return '<span class="badge warn">قفل فایل</span>';
+      if (t === "lease_released") return '<span class="badge ok">آزادسازی قفل</span>';
+      if (t === "lease_expired") return '<span class="badge danger">انقضای قفل</span>';
+      if (t === "agent_registered") return '<span class="badge ok">حضور ایجنت</span>';
+      if (t === "task_created") return '<span class="badge ok">تسک جدید</span>';
+      if (t === "task_updated") return '<span class="badge info">آپدیت تسک</span>';
+      if (t === "messages_acked") return '<span class="badge" style="opacity:0.6;">تایید دریافت</span>';
       return `<span class="badge info">${esc(t)}</span>`;
     }
 
@@ -378,7 +382,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       if (evType === "message_sent") {
         const bodyTxt = esc(payload.body || ev.summary || "");
-        return `<span style="font-weight:600;">${actor}</span> ➜ <span style="font-weight:600;">${target}</span>: <span style="color:var(--accent);font-style:italic;">"${bodyTxt}"</span>`;
+        return `<span style="font-weight:600;">${actor}</span> -&gt; <span style="font-weight:600;">${target}</span>: <span style="color:var(--accent);font-style:italic;">"${bodyTxt}"</span>`;
       }
       if (evType === "lease_acquired") {
         return `<span style="font-weight:600;">${actor}</span> فایل <code>${target}</code> را موقتاً قفل کرد تا تداخلی رخ ندهد.`;
@@ -401,7 +405,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const st = esc(payload.status || "");
         return `وضعیت تسک <code>${target}</code> به <b>${st}</b> تغییر یافت.`;
       }
-      return esc(ev.summary || (actor + " ➜ " + target));
+      return esc(ev.summary || (actor + " -> " + target));
     }
 
     function matchesFeedFilter(evType, filterVal) {
@@ -541,7 +545,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           `v${health.version}${bootShort} | Online: ${health.online_agents} | Leases: ${health.active_leases} | Tasks: ${health.tasks_count}`;
 
         if (sRes.status === 401) {
-          showErr("🔒 احراز هویت لازم است: لطفاً توکن (Bearer Token) را در کادر بالای صفحه وارد کنید. / Authentication required: enter token above.");
+          showErr("احراز هویت لازم است: لطفاً توکن (Bearer Token) را در کادر بالای صفحه وارد کنید. / Authentication required: enter token above.");
           return false;
         }
         if (!sRes.ok) {
@@ -666,19 +670,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function agentStateBadge(a) {
       if (!a.is_online) {
-        return '<span class="badge danger" style="padding:4px 10px;font-size:12px;">🔴 OFFLINE (قطع)</span>';
+        return '<span class="badge danger" style="padding:4px 10px;font-size:12px;">OFFLINE (قطع)</span>';
       }
       const st = String(a.status || a.reported_status || "").toLowerCase();
       const now = Date.now() / 1000;
       const lastHb = Number(a.last_heartbeat || 0);
       const isStale = (now - lastHb) > 70;
       if (st === "idle" || isStale) {
-        return '<span class="badge warn" style="padding:4px 10px;font-size:12px;">🟡 IDLE (آماده‌باش)</span>';
+        return '<span class="badge warn" style="padding:4px 10px;font-size:12px;">IDLE (آماده‌باش)</span>';
       }
       if (st === "busy") {
-        return '<span class="badge info" style="padding:4px 10px;font-size:12px;">🔵 BUSY (مشغول)</span>';
+        return '<span class="badge info" style="padding:4px 10px;font-size:12px;">BUSY (مشغول)</span>';
       }
-      return '<span class="badge ok" style="padding:4px 10px;font-size:12px;">🟢 ONLINE (فعال)</span>';
+      return '<span class="badge ok" style="padding:4px 10px;font-size:12px;">ONLINE (فعال)</span>';
     }
 
     function renderAgents(items) {
