@@ -197,43 +197,122 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def _scan_lan_git_peers(exclude_ip: str | None = None) -> list[str]:
+    """Scan local subnet (/24) in parallel for active agsync LAN Git daemons on port 9418 (~0.3s)."""
+    import concurrent.futures
+    local_ip = "127.0.0.1"
+    try:
+        from agsync.config import detect_lan_ip
+        local_ip = detect_lan_ip()
+    except Exception:
+        pass
+
+    skip_ip = exclude_ip or local_ip
+    parts = local_ip.split(".")
+    if len(parts) != 4 or local_ip.startswith("127."):
+        return []
+
+    prefix = ".".join(parts[:3])
+    found_peers: list[str] = []
+
+    def _probe(ip: str) -> str | None:
+        if ip == skip_ip:
+            return None
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.12)
+        try:
+            if sock.connect_ex((ip, 9418)) == 0:
+                return ip
+        except Exception:
+            pass
+        finally:
+            sock.close()
+        return None
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
+            candidates = [f"{prefix}.{i}" for i in range(1, 255)]
+            for res_ip in ex.map(_probe, candidates):
+                if res_ip:
+                    found_peers.append(res_ip)
+    except Exception:
+        pass
+    return found_peers
+
+
 def check_github_update(peer_ip: str | None = None) -> dict[str, Any]:
     """Check LAN Peer first, then GitHub for newer versions of agsync."""
     cur_ver = get_current_version().lstrip("v").strip()
     proxy = detect_system_proxy()
 
-    # 0. Priority: Check LAN Peer directly over local network (ultra-fast, zero-internet)
-    if (ROOT_DIR / ".git").exists() and peer_ip:
-        lan_url = f"git://{peer_ip}:9418/antigravity_multi_agent_sync"
-        try:
-            head_proc = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(ROOT_DIR),
-                capture_output=True,
-                text=True,
-                timeout=3.0,
-            )
-            local_sha = head_proc.stdout.strip()
-            lan_proc = subprocess.run(
-                ["git", "ls-remote", lan_url, "refs/heads/main"],
-                cwd=str(ROOT_DIR),
-                capture_output=True,
-                text=True,
-                timeout=3.0,
-            )
-            if lan_proc.returncode == 0 and lan_proc.stdout.strip():
-                lan_sha = lan_proc.stdout.split()[0].strip()
-                if local_sha and lan_sha and local_sha != lan_sha:
+    local_ip = "127.0.0.1"
+    try:
+        from agsync.config import detect_lan_ip
+        local_ip = detect_lan_ip()
+    except Exception:
+        pass
+
+    candidate_peers: list[str] = []
+    if peer_ip and peer_ip not in (local_ip, "127.0.0.1", "localhost"):
+        candidate_peers.append(peer_ip)
+    for p_ip in _scan_lan_git_peers(exclude_ip=local_ip):
+        if p_ip not in candidate_peers:
+            candidate_peers.append(p_ip)
+
+    # 0. Priority: Check discovered LAN Peers first (ultra-fast, zero-internet)
+    if (ROOT_DIR / ".git").exists():
+        for target_peer in candidate_peers:
+            lan_url = f"git://{target_peer}:9418/antigravity_multi_agent_sync"
+            try:
+                lan_tags_proc = subprocess.run(
+                    ["git", "ls-remote", "--tags", lan_url],
+                    cwd=str(ROOT_DIR),
+                    capture_output=True,
+                    text=True,
+                    timeout=3.5,
+                )
+                lan_tags = []
+                if lan_tags_proc.returncode == 0 and lan_tags_proc.stdout.strip():
+                    for line in lan_tags_proc.stdout.splitlines():
+                        if "refs/tags/" in line and not line.endswith("^{}"):
+                            lan_tags.append(line.split("refs/tags/")[-1].strip())
+
+                latest_lan_tag = max(lan_tags, key=_version_tuple) if lan_tags else ""
+                clean_lan_tag = latest_lan_tag.lstrip("v").strip()
+
+                lan_head_proc = subprocess.run(
+                    ["git", "ls-remote", lan_url, "refs/heads/main"],
+                    cwd=str(ROOT_DIR),
+                    capture_output=True,
+                    text=True,
+                    timeout=3.5,
+                )
+                lan_sha = lan_head_proc.stdout.split()[0].strip() if lan_head_proc.returncode == 0 and lan_head_proc.stdout.strip() else ""
+
+                local_head_proc = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(ROOT_DIR),
+                    capture_output=True,
+                    text=True,
+                    timeout=3.0,
+                )
+                local_sha = local_head_proc.stdout.strip()
+
+                has_tag_up = bool(clean_lan_tag and _version_tuple(clean_lan_tag) > _version_tuple(cur_ver))
+                has_commit_up = bool(local_sha and lan_sha and local_sha != lan_sha)
+
+                if has_tag_up or has_commit_up:
+                    disp_ver = clean_lan_tag or (f"LAN-{lan_sha[:7]}" if lan_sha else "latest")
                     return {
                         "has_update": True,
-                        "latest_version": f"LAN-{lan_sha[:7]}",
+                        "latest_version": disp_ver,
                         "current_version": cur_ver,
                         "via_lan": True,
-                        "peer_ip": peer_ip,
-                        "tag_name": lan_sha[:7],
+                        "peer_ip": target_peer,
+                        "tag_name": latest_lan_tag or (lan_sha[:7] if lan_sha else "main"),
                     }
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     # 1. If inside a Git clone, check via GitHub git origin
     if (ROOT_DIR / ".git").exists():
@@ -278,23 +357,23 @@ def check_github_update(peer_ip: str | None = None) -> dict[str, Any]:
                     if "refs/tags/" in line and not line.endswith("^{}"):
                         tags.append(line.split("refs/tags/")[-1].strip())
 
-            latest_tag = max(tags, key=_version_tuple) if tags else f"v{cur_ver}"
-            tag_clean = latest_tag.lstrip("v").strip()
+                latest_tag = max(tags, key=_version_tuple) if tags else f"v{cur_ver}"
+                tag_clean = latest_tag.lstrip("v").strip()
 
-            has_tag_update = _version_tuple(tag_clean) > _version_tuple(cur_ver)
-            has_commit_update = bool(local_sha and remote_sha and local_sha != remote_sha)
-            has_update = has_tag_update or has_commit_update
+                has_tag_update = _version_tuple(tag_clean) > _version_tuple(cur_ver)
+                has_commit_update = bool(local_sha and remote_sha and local_sha != remote_sha)
+                has_update = has_tag_update or has_commit_update
 
-            display_latest = tag_clean if has_tag_update else (f"{tag_clean} ({remote_sha[:7]})" if remote_sha else tag_clean)
+                display_latest = tag_clean if has_tag_update else (f"{tag_clean} ({remote_sha[:7]})" if remote_sha else tag_clean)
 
-            return {
-                "has_update": has_update,
-                "latest_version": display_latest,
-                "current_version": cur_ver,
-                "zip_url": f"https://github.com/{GITHUB_REPO}/archive/refs/tags/{latest_tag}.zip",
-                "tag_name": latest_tag,
-                "via_git": True,
-            }
+                return {
+                    "has_update": has_update,
+                    "latest_version": display_latest,
+                    "current_version": cur_ver,
+                    "zip_url": f"https://github.com/{GITHUB_REPO}/archive/refs/tags/{latest_tag}.zip",
+                    "tag_name": latest_tag,
+                    "via_git": True,
+                }
         except Exception:
             pass
 
@@ -376,33 +455,16 @@ def perform_update(
 
     # Strategy 1: Git pull if it's a git clone
     if (target / ".git").exists():
-        _log(f"Detected Git repository in {target}. Pulling latest changes via Git...")
-        env = os.environ.copy()
-        if proxy:
-            env.setdefault("HTTP_PROXY", proxy)
-            env.setdefault("HTTPS_PROXY", proxy)
-        try:
-            res = subprocess.run(
-                ["git", "pull", "origin", "main"],
-                cwd=str(target),
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=25.0,
-            )
-            if res.returncode == 0:
-                out = res.stdout.strip()
-                _log(f"Git update successful: {out}")
-                updated = True
-                success_msg = f"Git pull complete: {out}"
-            else:
-                _log(f"Git pull from GitHub notice ({res.stderr.strip()})")
-        except Exception as exc:
-            _log(f"GitHub git pull timed out/failed: {exc}")
+        lan_peers = []
+        if peer_ip and peer_ip not in ("127.0.0.1", "localhost"):
+            lan_peers.append(peer_ip)
+        for p in _scan_lan_git_peers():
+            if p not in lan_peers:
+                lan_peers.append(p)
 
-        # Strategy 1b: If GitHub failed and peer_ip is given, try LAN Git
-        if not updated and peer_ip:
-            lan_url = f"git://{peer_ip}:9418/antigravity_multi_agent_sync"
+        # 1a. Priority: Try LAN Git peer first (ultra-fast ~0.2s, bypasses filtered GitHub in Iran)
+        for p_ip in lan_peers:
+            lan_url = f"git://{p_ip}:9418/antigravity_multi_agent_sync"
             _log(f"Attempting LAN Git update from peer: {lan_url}...")
             try:
                 res_lan = subprocess.run(
@@ -410,15 +472,42 @@ def perform_update(
                     cwd=str(target),
                     capture_output=True,
                     text=True,
-                    timeout=15.0,
+                    timeout=8.0,
                 )
                 if res_lan.returncode == 0:
                     out = res_lan.stdout.strip()
                     _log(f"LAN Git update successful: {out}")
                     updated = True
                     success_msg = f"LAN Git update complete: {out}"
+                    break
             except Exception as exc:
                 _log(f"LAN Git update notice: {exc}")
+
+        # 1b. Fallback: Git pull from GitHub origin if LAN wasn't available
+        if not updated:
+            _log(f"Detected Git repository in {target}. Pulling latest changes from GitHub origin...")
+            env = os.environ.copy()
+            if proxy:
+                env.setdefault("HTTP_PROXY", proxy)
+                env.setdefault("HTTPS_PROXY", proxy)
+            try:
+                res = subprocess.run(
+                    ["git", "pull", "origin", "main"],
+                    cwd=str(target),
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=20.0,
+                )
+                if res.returncode == 0:
+                    out = res.stdout.strip()
+                    _log(f"Git update successful: {out}")
+                    updated = True
+                    success_msg = f"Git pull complete: {out}"
+                else:
+                    _log(f"Git pull from GitHub notice ({res.stderr.strip()})")
+            except Exception as exc:
+                _log(f"GitHub git pull timed out/failed: {exc}")
 
     # Strategy 2: Download release or main branch zip
     if not updated:

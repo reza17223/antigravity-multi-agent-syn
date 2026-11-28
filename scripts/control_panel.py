@@ -1742,28 +1742,33 @@ class AgsyncControlPanel:
                 self.log(f"Update check notice: {info['error']}")
 
                 def _fallback_prompt() -> None:
-                    if messagebox.askyesno(
-                        "Update Connection Notice",
-                        f"GitHub API connection timed out ({info['error']}).\n\n"
-                        "Would you like to try updating directly via Git / LAN peer?",
+                    suggested_peer = "192.168.1.182" if self.mode_var.get() == "host" else (self.host_ip_var.get().strip() or "192.168.1.130")
+                    target_ip = simpledialog.askstring(
+                        "Update via LAN Peer",
+                        "GitHub connection is blocked or timed out in this network.\n\n"
+                        "Enter Peer's LAN IP to pull update directly over local network:\n(e.g. 192.168.1.182)",
+                        initialvalue=suggested_peer,
                         parent=self.root,
-                    ):
-                        def _update_job() -> None:
-                            ok, msg = perform_update(log_fn=self.log, peer_ip=peer_ip)
-                            if ok:
-                                self.log("Update applied successfully.")
-                                if messagebox.askyesno(
-                                    "Update Complete - Restart Now?",
-                                    f"Successfully updated agsync!\n\n{msg}\n\nRestart control panel now to apply update?",
-                                    parent=self.root,
-                                ):
-                                    self._save_current_config()
-                                    subprocess.Popen([sys.executable, str(Path(__file__).resolve())])
-                                    self.root.destroy()
-                            else:
-                                messagebox.showerror("Update Failed", f"Update failed: {msg}", parent=self.root)
+                    )
+                    if not target_ip:
+                        return
 
-                        threading.Thread(target=_update_job, daemon=True).start()
+                    def _update_job() -> None:
+                        ok, msg = perform_update(log_fn=self.log, peer_ip=target_ip.strip())
+                        if ok:
+                            self.log("Update applied successfully.")
+                            if messagebox.askyesno(
+                                "Update Complete - Restart Now?",
+                                f"Successfully updated agsync!\n\n{msg}\n\nRestart control panel now to apply update?",
+                                parent=self.root,
+                            ):
+                                self._save_current_config()
+                                subprocess.Popen([sys.executable, str(Path(__file__).resolve())])
+                                self.root.destroy()
+                        else:
+                            messagebox.showerror("Update Failed", f"Update failed: {msg}", parent=self.root)
+
+                    threading.Thread(target=_update_job, daemon=True).start()
 
                 self.root.after(0, _fallback_prompt)
                 return

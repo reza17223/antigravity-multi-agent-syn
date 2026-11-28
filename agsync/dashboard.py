@@ -253,7 +253,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <section class="card" aria-labelledby="leases-heading">
           <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
             <h2 id="leases-heading">Active File &amp; Scope Leases <span class="badge warn" id="leases-count">0</span></h2>
-            <button class="btn btn-sm btn-subtle" onclick="releaseAllLeases()" title="Release all file locks">🔓 Unlock All</button>
+            <button class="btn btn-sm btn-subtle" onclick="releaseAllLeases()" title="Release all file locks">Unlock All</button>
           </div>
           <div id="leases-body"></div>
         </section>
@@ -709,7 +709,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <td>${esc(l.scope)}</td>
           <td><code>${esc(l.owner_id)}</code></td>
           <td>${esc(l.reason || "-")}</td>
-          <td><button class="btn btn-sm btn-warn" onclick="releaseLease('${esc(l.lease_id)}', '${esc(l.owner_id)}')">🔓 Unlock</button></td>
+          <td><button class="btn btn-sm btn-warn" onclick="releaseLease('${esc(l.lease_id)}', '${esc(l.owner_id)}')">Unlock</button></td>
         </tr>`).join("") + "</tbody></table></div>";
     }
 

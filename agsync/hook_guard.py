@@ -230,6 +230,11 @@ def evaluate_hook_payload(
             ),
         }
 
+    # Dynamic Solo Mode: When colleague is offline or you are the only agent online,
+    # never block and do not require lease acquisition!
+    if res.get("solo_mode") is True:
+        return {"decision": "allow"}
+
     blocked = res.get("blocked") or []
     if blocked:
         conflict = blocked[0]["conflicts"][0]

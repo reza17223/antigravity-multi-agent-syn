@@ -39,6 +39,18 @@ class LockService:
         self.db = db
         self.events = events
 
+    def _get_online_agent_ids_locked(self, now: float) -> set[str]:
+        """Return the set of agent_ids currently online (active heartbeats) without starting a nested transaction."""
+        try:
+            rows = self.db.conn.execute("SELECT agent_id, last_heartbeat, ttl_sec FROM agents;").fetchall()
+            return {
+                r["agent_id"]
+                for r in rows
+                if now <= (float(r["last_heartbeat"]) + int(r["ttl_sec"]))
+            }
+        except Exception:
+            return set()
+
     def _record_event_locked(
         self,
         event_type: str,
@@ -149,12 +161,17 @@ class LockService:
             self.purge_expired_locked(now)
             rows = self.db.conn.execute("SELECT * FROM leases WHERE expires_at > ?;", (now,)).fetchall()
 
+            online_agents = self._get_online_agent_ids_locked(now)
             conflicts: list[dict[str, Any]] = []
             exact_own_row: sqlite3.Row | None = None
             for row in rows:
                 if row["owner_id"] == oid:
                     if row["resource_norm"] == norm and row["scope"] == sc:
                         exact_own_row = row
+                    continue
+                # If online tracking has registered peers and the lock owner is OFFLINE:
+                # The lease is considered abandoned/stale by the offline developer and does not block!
+                if online_agents and row["owner_id"] not in online_agents:
                     continue
                 if paths_overlap(norm, sc, row["resource_norm"], row["scope"]):
                     conflicts.append(row_to_lease(row))
@@ -460,6 +477,11 @@ class LockService:
                 ).fetchall()
             ]
 
+        online_agents = self._get_online_agent_ids_locked(now)
+        # Solo mode is only active when at least one agent is registered and NO other peers are online
+        other_peers = [a for a in online_agents if a != aid] if online_agents else None
+        solo_mode = bool(online_agents and other_peers is not None and len(other_peers) == 0)
+
         blocked: list[dict[str, Any]] = []
         owned_by_self: list[dict[str, Any]] = []
         free: list[str] = []
@@ -472,8 +494,10 @@ class LockService:
                     if aid is not None and lease["owner_id"] == aid:
                         self_hits.append(lease)
                     else:
-                        peer_hits.append(lease)
-            if peer_hits:
+                        # Only consider conflict if lease owner is currently ONLINE!
+                        if not online_agents or lease["owner_id"] in online_agents:
+                            peer_hits.append(lease)
+            if peer_hits and not solo_mode:
                 blocked.append({"path": orig, "resource_norm": norm, "conflicts": peer_hits})
             elif self_hits:
                 owned_by_self.append(
@@ -484,6 +508,8 @@ class LockService:
 
         return {
             "all_clear": len(blocked) == 0,
+            "solo_mode": solo_mode,
+            "online_peers_count": len(other_peers) if other_peers is not None else None,
             "agent_id": aid,
             "blocked": blocked,
             "owned_by_self": owned_by_self,
