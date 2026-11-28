@@ -31,6 +31,25 @@ def check_github_update() -> dict[str, Any]:
     # 1. If inside a Git clone, check via git first (uses git's own proxy/network config)
     if (ROOT_DIR / ".git").exists():
         try:
+            head_proc = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+            local_sha = head_proc.stdout.strip()
+            remote_proc = subprocess.run(
+                ["git", "ls-remote", "origin", "refs/heads/main"],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                timeout=15.0,
+            )
+            remote_sha = ""
+            if remote_proc.returncode == 0 and remote_proc.stdout.strip():
+                remote_sha = remote_proc.stdout.split()[0].strip()
+
             res = subprocess.run(
                 ["git", "ls-remote", "--tags", "origin"],
                 cwd=str(ROOT_DIR),
@@ -38,35 +57,41 @@ def check_github_update() -> dict[str, Any]:
                 text=True,
                 timeout=15.0,
             )
+            tags = []
             if res.returncode == 0 and res.stdout.strip():
-                tags = []
                 for line in res.stdout.splitlines():
                     if "refs/tags/" in line and not line.endswith("^{}"):
                         tag_name = line.split("refs/tags/")[-1].strip()
                         tags.append(tag_name)
-                if tags:
-                    def _tup(t: str) -> tuple[int, ...]:
-                        p = t.lstrip("v").split(".")
-                        res_p = []
-                        for x in p:
-                            try:
-                                res_p.append(int(x))
-                            except ValueError:
-                                res_p.append(0)
-                        return tuple(res_p)
 
-                    latest_tag = max(tags, key=_tup)
-                    tag_clean = latest_tag.lstrip("v").strip()
-                    cur_clean = get_current_version().lstrip("v").strip()
-                    has_update = _tup(tag_clean) > _tup(cur_clean)
-                    return {
-                        "has_update": has_update,
-                        "latest_version": tag_clean,
-                        "current_version": cur_clean,
-                        "zip_url": f"https://github.com/{GITHUB_REPO}/releases/download/{latest_tag}/antigravity-multi-agent-sync-{latest_tag}.zip",
-                        "tag_name": latest_tag,
-                        "via_git": True,
-                    }
+            def _tup(t: str) -> tuple[int, ...]:
+                p = t.lstrip("v").split(".")
+                res_p = []
+                for x in p:
+                    try:
+                        res_p.append(int(x))
+                    except ValueError:
+                        res_p.append(0)
+                return tuple(res_p)
+
+            cur_clean = get_current_version().lstrip("v").strip()
+            latest_tag = max(tags, key=_tup) if tags else f"v{cur_clean}"
+            tag_clean = latest_tag.lstrip("v").strip()
+
+            has_tag_update = _tup(tag_clean) > _tup(cur_clean)
+            has_commit_update = bool(local_sha and remote_sha and local_sha != remote_sha)
+            has_update = has_tag_update or has_commit_update
+
+            display_latest = tag_clean if has_tag_update else (f"{tag_clean} ({remote_sha[:7]})" if remote_sha else tag_clean)
+
+            return {
+                "has_update": has_update,
+                "latest_version": display_latest,
+                "current_version": cur_clean,
+                "zip_url": f"https://github.com/{GITHUB_REPO}/releases/download/{latest_tag}/antigravity-multi-agent-sync-{latest_tag}.zip",
+                "tag_name": latest_tag,
+                "via_git": True,
+            }
         except Exception:
             pass
 
