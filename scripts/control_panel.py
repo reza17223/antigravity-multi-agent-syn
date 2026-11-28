@@ -29,6 +29,7 @@ from agsync.adapters.network import (
     validate_port,
 )
 from agsync.client import SyncClient, SyncClientError
+from agsync.commands.clone import clone_from_host, pull_latest_changes
 from agsync.commands.doctor import run_doctor
 from agsync.config import (
     configure_antigravity_mcp,
@@ -78,6 +79,7 @@ class AgsyncControlPanel:
         self._apply_mode_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_logs()
+        self._start_auto_sync_listener()
 
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 5}
@@ -195,6 +197,23 @@ class AgsyncControlPanel:
             r_setup, text="Install Repo Hooks & Templates", command=self.attach_repo
         )
         self.attach_btn.pack(side="left", padx=4)
+
+        r_sync = ttk.Frame(ag_frame)
+        r_sync.pack(fill="x", padx=6, pady=4)
+        ttk.Label(r_sync, text="Team Sync:").pack(side="left", padx=(0, 6))
+        self.clone_btn = ttk.Button(
+            r_sync, text="📥 Clone Project from Host", command=self.clone_project_ui
+        )
+        self.clone_btn.pack(side="left", padx=4)
+        self.sync_btn = ttk.Button(
+            r_sync, text="🔄 Pull / Sync Changes", command=self.sync_changes_ui
+        )
+        self.sync_btn.pack(side="left", padx=4)
+        self.auto_sync_var = tk.BooleanVar(value=True)
+        self.pending_sync = False
+        ttk.Checkbutton(
+            r_sync, text="Auto-Sync on Peer Done", variable=self.auto_sync_var
+        ).pack(side="left", padx=8)
 
         r_p2 = ttk.Frame(ag_frame)
         r_p2.pack(fill="x", padx=6, pady=4)
@@ -360,6 +379,9 @@ class AgsyncControlPanel:
         cmd = [sys.executable, "-m", "agsync.cli", "serve", "--host", "0.0.0.0", "--port", str(port_num)]
         if self.discover_chk_var.get():
             cmd.append("--discover")
+        repo_val = self.repo_var.get().strip()
+        if repo_val and Path(repo_val).is_dir():
+            cmd.extend(["--repo", repo_val])
 
         env = dict(os.environ)
         tok = self.token_var.get().strip()
@@ -693,6 +715,12 @@ class AgsyncControlPanel:
             self.attach_btn.config(state="normal")
             if ok:
                 self.log(f"Repo hooks & templates installed:\n{out}")
+                if self.mode_var.get() == "host":
+                    try:
+                        SyncClient(url, token=tok or None, timeout=5.0).attach_repo(repo)
+                        self.log(f"Attached repository to hub for peer cloning: {repo}")
+                    except Exception as exc:
+                        self.log(f"Hub repo attach notice: {exc}")
                 messagebox.showinfo("Repo Attached", f"Hooks & templates installed in:\n{repo}")
             else:
                 self.log(f"Repo hook install FAILED: {err}")
@@ -807,6 +835,165 @@ class AgsyncControlPanel:
                 self.log(f"Merge Check CONFLICTS: {res['conflicts']}")
         except Exception as exc:
             self.log(f"Merge Check error: {exc}")
+
+    def clone_project_ui(self) -> None:
+        url = self._server_url()
+        tok = self.token_var.get().strip() or None
+        agent = self.agent_var.get().strip() or default_agent_id()
+        dest_val = self.repo_var.get().strip()
+        if not dest_val:
+            dest_val = filedialog.askdirectory(
+                title="Select Local Folder to Clone Project Into",
+                parent=self.root,
+            )
+            if not dest_val:
+                return
+            self.repo_var.set(dest_val)
+            self._save_current_config()
+
+        dest_path = Path(dest_val)
+        self.clone_btn.config(state="disabled")
+        self.log(f"Starting 1-click clone from host ({url}) into {dest_path}...")
+
+        def _worker() -> None:
+            err = None
+            try:
+                clone_from_host(
+                    server_url=url,
+                    dest_dir=dest_path,
+                    token=tok,
+                    agent_id=agent,
+                    log_fn=self.log,
+                )
+            except Exception as exc:
+                err = str(exc)
+
+            def _done() -> None:
+                self.clone_btn.config(state="normal")
+                if err:
+                    self.log(f"Clone FAILED: {err}")
+                    messagebox.showerror("Clone Failed", err)
+                else:
+                    self.log(f"Project successfully cloned and configured in {dest_path}!")
+                    messagebox.showinfo(
+                        "Clone Complete",
+                        f"Project cloned from host into:\n{dest_path}\n\nAntigravity MCP and safety hooks installed!",
+                    )
+
+            self.root.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def sync_changes_ui(self) -> None:
+        repo_val = self.repo_var.get().strip() or str(ROOT_DIR)
+        url = (
+            f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
+            if self.mode_var.get() == "host"
+            else self._server_url()
+        )
+        tok = self.token_var.get().strip() or None
+        self.sync_btn.config(state="disabled")
+        self.log(f"Checking for updates in {repo_val}...")
+
+        def _worker() -> None:
+            err = None
+            res: dict[str, Any] = {}
+            try:
+                res = pull_latest_changes(repo_val, url, token=tok, log_fn=self.log)
+            except Exception as exc:
+                err = str(exc)
+
+            def _done() -> None:
+                self.sync_btn.config(state="normal")
+                if err:
+                    self.log(f"Sync FAILED: {err}")
+                    messagebox.showerror("Sync Failed", err)
+                elif res.get("status") == "busy":
+                    messagebox.showwarning(
+                        "Sync Postponed",
+                        res.get("message", "Working tree has uncommitted changes."),
+                    )
+                elif res.get("status") == "error":
+                    messagebox.showerror(
+                        "Sync Failed",
+                        res.get("message", "Could not pull changes."),
+                    )
+                else:
+                    messagebox.showinfo(
+                        "Sync OK",
+                        f"Repository synchronized successfully:\n{res.get('output', 'Already up to date.')}",
+                    )
+
+            self.root.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_auto_sync_listener(self) -> None:
+        def _loop() -> None:
+            last_event_id = 0
+            while not self._tail_stop.is_set():
+                if not self.auto_sync_var.get():
+                    time.sleep(2.0)
+                    continue
+                url = (
+                    f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}"
+                    if self.mode_var.get() == "host"
+                    else self._server_url()
+                )
+                tok = self.token_var.get().strip() or None
+                repo_val = self.repo_var.get().strip()
+                my_agent = self.agent_var.get().strip() or default_agent_id()
+                if not repo_val or not Path(repo_val).is_dir():
+                    time.sleep(3.0)
+                    continue
+
+                try:
+                    client = SyncClient(url, token=tok, timeout=20.0)
+                    events = client.get_events(since_id=last_event_id, wait=10.0, limit=50)
+                    for ev in events:
+                        ev_id = int(ev.get("event_id", 0))
+                        if ev_id > last_event_id:
+                            last_event_id = ev_id
+                        ev_type = ev.get("event_type")
+                        owner = ev.get("agent_id")
+                        payload = ev.get("payload") or {}
+
+                        if ev_type == "task_updated" and payload.get("status") == "done" and owner != my_agent:
+                            has_lease = False
+                            try:
+                                snap = client.snapshot(agent_id=my_agent)
+                                active_leases = snap.get("active_leases") or []
+                                has_lease = any(l.get("owner_id") == my_agent for l in active_leases)
+                            except Exception:
+                                pass
+
+                            if has_lease:
+                                self.pending_sync = True
+                                self.log(
+                                    f"Peer '{owner}' completed task {payload.get('task_id')}. "
+                                    "Sync queued (pending local task completion)."
+                                )
+                            else:
+                                self.log(f"Peer '{owner}' completed task {payload.get('task_id')}. Auto-syncing changes...")
+                                pull_latest_changes(repo_val, url, token=tok, log_fn=self.log)
+
+                        if self.pending_sync:
+                            has_lease = False
+                            try:
+                                snap = client.snapshot(agent_id=my_agent)
+                                active_leases = snap.get("active_leases") or []
+                                has_lease = any(l.get("owner_id") == my_agent for l in active_leases)
+                            except Exception:
+                                pass
+                            if not has_lease:
+                                self.pending_sync = False
+                                self.log("Local tasks clear. Running queued auto-sync...")
+                                pull_latest_changes(repo_val, url, token=tok, log_fn=self.log)
+
+                except Exception:
+                    time.sleep(3.0)
+
+        threading.Thread(target=_loop, daemon=True).start()
 
 
 def main() -> None:

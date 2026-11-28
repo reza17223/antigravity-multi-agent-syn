@@ -6,6 +6,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from agsync.adapters.network import build_opener_for_url
@@ -463,3 +464,25 @@ class SyncClient:
             "/join",
             body={"nonce": nonce, "signature": signature},
         )
+
+    def attach_repo(self, repo_path: str | Path) -> dict[str, Any]:
+        return self._request("POST", "/repo/attach", body={"repo_path": str(repo_path)})
+
+    def get_repo_status(self) -> dict[str, Any]:
+        return self._request("GET", "/repo/status")
+
+    def download_repo_bundle(self, dest_path: Path | str) -> dict[str, Any]:
+        dest_path = Path(dest_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        url = f"{self.server_url.rstrip('/')}/repo/bundle"
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", "agsync-client")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
+        opener = self._opener
+        with opener.open(req, timeout=self.timeout) as resp:
+            fmt = resp.headers.get("X-Repo-Format", "git-bundle")
+            with open(dest_path, "wb") as wf:
+                while chunk := resp.read(65536):
+                    wf.write(chunk)
+        return {"format": fmt, "dest_path": str(dest_path), "bytes": dest_path.stat().st_size}

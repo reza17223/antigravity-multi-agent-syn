@@ -10,11 +10,15 @@ import logging.handlers
 import math
 import os
 import secrets
+import shutil
 import signal
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -427,8 +431,10 @@ class CoordinationHTTPServer(ThreadingHTTPServer):
         pid_lock: bool = True,
         log_file: Path | None = None,
         purge_interval_sec: float = 60.0,
+        repo_dir: Path | str | None = None,
     ) -> None:
         self.store = store
+        self.repo_dir = Path(repo_dir).resolve() if repo_dir else None
         self.invites = InviteService(store.db)
         self.invite_secret = (token.strip() if (token and token.strip()) else None) or secrets.token_urlsafe(24)
         self.token = token.strip() if (token and token.strip()) else None
@@ -802,6 +808,71 @@ class CoordinationHandler(BaseHTTPRequestHandler):
         if not self._check_auth(admin_required=is_state_route):
             return
 
+        if path == "/repo/status":
+            repo = getattr(self.server, "repo_dir", None)
+            self._send_json(
+                200,
+                {
+                    "attached": repo is not None,
+                    "repo_path": str(repo) if repo else None,
+                    "has_git": (repo / ".git").exists() if repo else False,
+                },
+            )
+            return
+
+        if path == "/repo/bundle":
+            repo = getattr(self.server, "repo_dir", None)
+            if not repo or not repo.is_dir():
+                raise ValidationError("no_repo_attached", "Host has not attached a repository yet.")
+            temp_dir = Path(tempfile.mkdtemp(prefix="agsync_bundle_"))
+            bundle_file = temp_dir / "repo.bundle"
+            is_bundle = False
+            try:
+                if (repo / ".git").exists():
+                    proc = subprocess.run(
+                        ["git", "bundle", "create", str(bundle_file), "--all"],
+                        cwd=str(repo),
+                        capture_output=True,
+                        text=True,
+                    )
+                    if proc.returncode == 0 and bundle_file.is_file() and bundle_file.stat().st_size > 0:
+                        is_bundle = True
+                if not is_bundle:
+                    zip_file = temp_dir / "repo.zip"
+                    with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for root, dirs, files in os.walk(repo):
+                            rel_root = os.path.relpath(root, repo)
+                            if rel_root != "." and (rel_root.startswith(".git") or rel_root.startswith(".agsync")):
+                                continue
+                            dirs[:] = [d for d in dirs if d not in (".git", ".agsync", ".venv", "node_modules", "__pycache__")]
+                            for f in files:
+                                fp = Path(root) / f
+                                zf.write(fp, os.path.relpath(fp, repo))
+                    stream_path = zip_file
+                    mime_type = "application/zip"
+                    fmt = "zip"
+                    filename = "repo.zip"
+                else:
+                    stream_path = bundle_file
+                    mime_type = "application/x-git-bundle"
+                    fmt = "git-bundle"
+                    filename = "repo.bundle"
+
+                file_size = stream_path.stat().st_size
+                self.send_response(200)
+                self.send_header("Content-Type", mime_type)
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("X-Repo-Format", fmt)
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                with open(stream_path, "rb") as rf:
+                    while chunk := rf.read(65536):
+                        self.wfile.write(chunk)
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            return
+
         if path == "/events":
             since_raw = qs.get("since_id", ["0"])[0]
             since_id = int(since_raw)
@@ -968,6 +1039,19 @@ class CoordinationHandler(BaseHTTPRequestHandler):
                 secret=self.server.invite_secret,
             )
             self._send_json(200, res)
+            return
+
+        if path == "/repo/attach":
+            if not isinstance(body, dict):
+                raise ValidationError("validation_error", "JSON object body expected")
+            repo_path_raw = body.get("repo_path")
+            if not repo_path_raw or not isinstance(repo_path_raw, str):
+                raise ValidationError("validation_error", "Field 'repo_path' required")
+            rp = Path(repo_path_raw).resolve()
+            if not rp.is_dir():
+                raise ValidationError("invalid_path", f"Path '{rp}' does not exist or is not a directory")
+            self.server.repo_dir = rp
+            self._send_json(200, {"status": "ok", "repo_path": str(rp), "has_git": (rp / ".git").exists()})
             return
 
         if path == "/invites":
@@ -1218,6 +1302,7 @@ def create_server(
     case_insensitive: bool | None = None,
     pid_lock: bool = True,
     log_file: Path | None = None,
+    repo_dir: Path | str | None = None,
 ) -> CoordinationHTTPServer:
     store = SyncStore(db_path, case_insensitive=case_insensitive)
     try:
@@ -1230,6 +1315,7 @@ def create_server(
             allowed_hosts=allowed_hosts,
             pid_lock=pid_lock,
             log_file=log_file,
+            repo_dir=repo_dir,
         )
     except Exception:
         store.close()
@@ -1269,6 +1355,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Force case-insensitive path matching (defaults to enabled on Windows).",
     )
     parser.add_argument(
+        "--repo",
+        default=None,
+        help="Attach project repository to host for bundle sharing.",
+    )
+    parser.add_argument(
         "--discover",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1301,6 +1392,7 @@ def main(argv: list[str] | None = None) -> int:
             case_insensitive=args.case_insensitive,
             pid_lock=True,
             log_file=Path(args.log_file) if args.log_file else None,
+            repo_dir=Path(args.repo) if args.repo else None,
         )
     except (ValueError, RuntimeError, OSError) as exc:
         try:

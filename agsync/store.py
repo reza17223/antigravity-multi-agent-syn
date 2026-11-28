@@ -206,13 +206,19 @@ class SyncStore:
         result_summary: str | None = None,
         force: bool = False,
     ) -> dict[str, Any]:
-        return self.events.update_task(
+        res = self.events.update_task(
             task_id,
             agent_id,
             status=status,
             result_summary=result_summary,
             force=force,
         )
+        if status == "done":
+            try:
+                self.locks.release_lease(agent_id, release_all=True)
+            except Exception:
+                pass
+        return res
 
     # Leases
     def acquire_lease(

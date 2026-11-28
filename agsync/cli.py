@@ -272,6 +272,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_mc.add_argument("--target", default="HEAD", help="Target branch/ref (default: HEAD)")
     p_mc.add_argument("--repo", default=".")
 
+    # clone
+    p_cl = sub.add_parser("clone", parents=[common], help="Clone/download project repository from host hub.")
+    p_cl.add_argument("--dest", required=True, help="Destination directory path on local machine.")
+    p_cl.add_argument("--ide", choices=["antigravity", "claude", "cursor"], default="antigravity")
+
+    # sync
+    p_sy = sub.add_parser("sync", parents=[common], help="Pull latest repository changes from remote or host bundle.")
+    p_sy.add_argument("--repo", default=".", help="Local repository path.")
+
     return parser
 
 
@@ -309,6 +318,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "merge-check":
         args.json = as_json
         return cmd_merge_check(args)
+    if args.cmd == "clone":
+        from agsync.commands.clone import cmd_clone
+        return cmd_clone(args)
+    if args.cmd == "sync":
+        from agsync.commands.clone import cmd_sync
+        return cmd_sync(args)
 
     return cmd_client_dispatch(args, as_json=as_json)
 
