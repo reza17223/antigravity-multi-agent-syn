@@ -367,6 +367,9 @@ class AgsyncControlPanel:
             r_setup, text="Install Repo Hooks & Templates", command=self.attach_repo
         )
         self.attach_btn.pack(side="left", padx=4)
+        ttk.Button(
+            r_setup, text="🛡️ Ensure Safe .gitignore", command=self.ensure_gitignore_ui
+        ).pack(side="left", padx=4)
 
         r_sync = ttk.Frame(ag_frame)
         r_sync.pack(fill="x", padx=6, pady=4)
@@ -818,6 +821,30 @@ class AgsyncControlPanel:
         except Exception as exc:
             self.log(f"MCP setup FAILED: {exc}")
             messagebox.showerror("MCP Setup Failed", str(exc))
+
+    def ensure_gitignore_ui(self) -> None:
+        repo_str = self.repo_var.get().strip()
+        if not repo_str:
+            self._browse_repo()
+            repo_str = self.repo_var.get().strip()
+        if not repo_str:
+            return
+        repo = Path(repo_str)
+        if not repo.is_dir():
+            messagebox.showerror("Invalid Folder", f"Directory does not exist:\n{repo}")
+            return
+        from agsync.commands.hooks import ensure_repo_gitignore
+        changed, note = ensure_repo_gitignore(repo)
+        self.log(f"Multi-Agent Safe .gitignore ({note}) -> {repo / '.gitignore'}")
+        messagebox.showinfo(
+            "Safe .gitignore Ready",
+            f"Multi-agent safe .gitignore ({note}):\n{repo / '.gitignore'}\n\n"
+            "Excluded items:\n"
+            "• Local SQLite databases (*.sqlite)\n"
+            "• Local machine identity (.agsync/)\n"
+            "• Large archives (*.zip, *.rar)\n"
+            "• Cache and log files (.deploy_cache.json, *.log)",
+        )
 
     def attach_repo(self) -> None:
         repo_str = self.repo_var.get().strip()

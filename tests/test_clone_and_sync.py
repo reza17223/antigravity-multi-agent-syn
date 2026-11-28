@@ -83,9 +83,11 @@ class TestCloneAndSync(unittest.TestCase):
                 self.assertTrue((peer_dest / "server.py").exists())
                 self.assertEqual((peer_dest / "server.py").read_text(encoding="utf-8").strip(), "print('hello host')")
 
-                # Verify hooks & templates were installed
+                # Verify hooks, templates & .gitignore were installed
                 self.assertTrue((peer_dest / ".git" / "hooks" / "pre-commit").exists())
                 self.assertTrue((peer_dest / "AGENTS.md").exists())
+                self.assertTrue((peer_dest / ".gitignore").exists())
+                self.assertIn(".agsync/", (peer_dest / ".gitignore").read_text(encoding="utf-8"))
 
                 # Test pulling updates from host
                 (host_repo / "api.py").write_text("API_V2 = True\n", encoding="utf-8")
@@ -98,3 +100,34 @@ class TestCloneAndSync(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_ensure_repo_gitignore_creation_and_append(self) -> None:
+        from agsync.commands.hooks import ensure_repo_gitignore
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            # 1. Fresh creation
+            changed, note = ensure_repo_gitignore(repo)
+            self.assertTrue(changed)
+            self.assertEqual(note, "created")
+            self.assertTrue((repo / ".gitignore").exists())
+            content = (repo / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn(".agsync/", content)
+            self.assertIn("*.sqlite", content)
+            self.assertIn(".deploy_cache.json", content)
+
+            # 2. Already up to date
+            changed2, note2 = ensure_repo_gitignore(repo)
+            self.assertFalse(changed2)
+            self.assertEqual(note2, "already configured")
+
+            # 3. Partial existing .gitignore missing rules
+            partial_repo = repo / "partial"
+            partial_repo.mkdir()
+            (partial_repo / ".gitignore").write_text("my_custom_folder/\n*.tmp\n", encoding="utf-8")
+            changed3, note3 = ensure_repo_gitignore(partial_repo)
+            self.assertTrue(changed3)
+            self.assertIn("appended", note3)
+            updated_content = (partial_repo / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn("my_custom_folder/", updated_content)
+            self.assertIn(".agsync/", updated_content)
+            self.assertIn("*.sqlite", updated_content)

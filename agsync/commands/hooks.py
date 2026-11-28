@@ -26,6 +26,86 @@ from agsync.protocol import DEFAULT_PORT
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
+DEFAULT_GITIGNORE_TEMPLATE = """# ==========================================
+# agsync Multi-Agent Safe Coordination Rules
+# ==========================================
+
+# 1. agsync Machine Identity & Tokens (Never share machine identities)
+.agsync/
+.agsync-agent
+
+# 2. Local Databases & Binary Storage (Prevents multi-agent binary merge conflicts)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-journal
+
+# 3. Deployment & Execution Caches
+.deploy_cache.json
+*.log
+*.bak
+*.tmp
+*.temp
+
+# 4. Large Archives & Backups
+*.zip
+*.tar
+*.gz
+*.rar
+
+# 5. IDE, Editors & OS Volatile Files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 6. Common Language Caches & Environments
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+"""
+
+
+def ensure_repo_gitignore(repo: Path) -> tuple[bool, str]:
+    """Ensure a multi-agent safe .gitignore exists in repo, appending essential rules if missing."""
+    gitignore_path = repo / ".gitignore"
+    if not gitignore_path.exists():
+        atomic_write_text(gitignore_path, DEFAULT_GITIGNORE_TEMPLATE.strip() + "\n", create_backup=False)
+        return True, "created"
+
+    existing = read_text_auto(gitignore_path)
+    lines = {
+        line.strip()
+        for line in existing.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+    essential_rules = [
+        ".agsync/",
+        ".agsync-agent",
+        "*.sqlite",
+        "*.sqlite-wal",
+        "*.sqlite-shm",
+        ".deploy_cache.json",
+    ]
+    missing = [r for r in essential_rules if r not in lines]
+    if missing:
+        append_block = (
+            "\n# --- agsync Multi-Agent Safe Coordination Rules ---\n"
+            + "\n".join(missing)
+            + "\n"
+        )
+        new_content = existing
+        if not new_content.endswith("\n"):
+            new_content += "\n"
+        new_content += append_block
+        atomic_write_text(gitignore_path, new_content, create_backup=False)
+        return True, f"appended {len(missing)} missing rules"
+    return False, "already configured"
+
 
 def read_local_setting(repo_root: Path, filenames: tuple[str, ...]) -> str | None:
     for rel in filenames:
@@ -338,6 +418,10 @@ def cmd_install_hooks(args: argparse.Namespace) -> int:
     if getattr(args, "with_templates", False):
         copied = copy_project_templates(repo)
         installed.extend(copied)
+
+    changed_gi, gi_note = ensure_repo_gitignore(repo)
+    if (repo / ".gitignore").exists():
+        installed.append(str(repo / ".gitignore"))
 
     result = {
         "installed": installed,
