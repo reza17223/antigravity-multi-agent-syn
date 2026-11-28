@@ -392,6 +392,10 @@ class AgsyncControlPanel:
             r_sync, text="📡 Share Git on LAN", command=self.toggle_git_daemon_ui
         )
         self.git_daemon_btn.pack(side="left", padx=4)
+        self.pull_lan_git_btn = ttk.Button(
+            r_sync, text="📥 Pull from Peer LAN Git", command=self.pull_lan_git_ui
+        )
+        self.pull_lan_git_btn.pack(side="left", padx=4)
         self.auto_sync_var = tk.BooleanVar(value=True)
         self.pending_sync = False
         ttk.Checkbutton(
@@ -1075,6 +1079,12 @@ class AgsyncControlPanel:
             self.git_daemon_proc = None
             self.git_daemon_btn.config(text="📡 Share Git on LAN")
             self.log("LAN Git Server stopped.")
+            try:
+                hub_url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}" if self.mode_var.get() == "host" else self._server_url()
+                tok = self.token_var.get().strip() or None
+                SyncClient(hub_url, token=tok, timeout=2.0).publish_context("lan_git:url", "")
+            except Exception:
+                pass
             return
 
         repo_val = self.repo_var.get().strip() or str(ROOT_DIR)
@@ -1106,13 +1116,126 @@ class AgsyncControlPanel:
             git_url = f"git://{lan_ip}:9418/{repo_name}"
             self.log(f"📡 LAN Git Server running on {git_url}")
             self.log(f"Peer can pull using: git pull {git_url} main")
+
+            # Announce LAN Git URL to hub context so peer can 1-click pull without typing!
+            try:
+                hub_url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}" if self.mode_var.get() == "host" else self._server_url()
+                tok = self.token_var.get().strip() or None
+                SyncClient(hub_url, token=tok, timeout=2.0).publish_context("lan_git:url", git_url)
+                self.log(f"Published LAN Git URL to Hub context: {git_url}")
+            except Exception:
+                pass
+
             messagebox.showinfo(
                 "LAN Git Server Active",
-                f"Repository is now shared on the local network!\n\nGit URL:\n{git_url}\n\nYour peer can connect or pull from this URL instantly without internet.",
+                f"Repository is now shared on the local network!\n\nGit URL:\n{git_url}\n\nYour peer can now click 'Pull from Peer LAN Git' to clone or pull instantly without internet.",
             )
         except Exception as exc:
             self.log(f"Failed to start LAN Git server: {exc}")
             messagebox.showerror("LAN Git Error", str(exc))
+
+    def pull_lan_git_ui(self) -> None:
+        """1-Click Clone or Pull project directly from Peer's LAN Git Server (git://)."""
+        hub_url = f"http://127.0.0.1:{self.port_var.get().strip() or '8765'}" if self.mode_var.get() == "host" else self._server_url()
+        tok = self.token_var.get().strip() or None
+
+        # 1. Discover published LAN Git URL from hub context
+        discovered_git_url = ""
+        try:
+            client = SyncClient(hub_url, token=tok, timeout=2.5)
+            ctx = client.get_context("lan_git:url")
+            if ctx.get("found"):
+                discovered_git_url = str(ctx.get("value") or "").strip()
+        except Exception:
+            pass
+
+        # 2. If not found in context, prompt with intelligent pre-fill
+        if not discovered_git_url:
+            peer_ip = self.host_ip_var.get().strip() or "192.168.1.130"
+            repo_val = self.repo_var.get().strip() or str(ROOT_DIR)
+            repo_name = Path(repo_val).name
+            default_url = f"git://{peer_ip}:9418/{repo_name}"
+            target_url = simpledialog.askstring(
+                "Pull from Peer LAN Git",
+                "Enter Peer's LAN Git URL:\n(e.g. git://192.168.1.x:9418/repo_name)",
+                initialvalue=default_url,
+                parent=self.root,
+            )
+            if not target_url:
+                return
+            discovered_git_url = target_url.strip()
+
+        dest_val = self.repo_var.get().strip()
+        if not dest_val:
+            dest_val = filedialog.askdirectory(title="Select Local Folder to Clone/Pull Into", parent=self.root)
+            if not dest_val:
+                return
+            self.repo_var.set(dest_val)
+            self._save_current_config()
+
+        dest_path = Path(dest_val)
+        self.pull_lan_git_btn.config(state="disabled")
+        self.log(f"Connecting to Peer LAN Git: {discovered_git_url} -> {dest_path}...")
+
+        def _worker() -> None:
+            err = None
+            out_msg = ""
+            try:
+                subprocess.run(["git", "config", "--global", "--add", "safe.directory", "*"], capture_output=True)
+                if (dest_path / ".git").exists():
+                    self.log(f"Local repo exists. Pulling latest commits from {discovered_git_url}...")
+                    res = subprocess.run(
+                        ["git", "pull", discovered_git_url, "main"],
+                        cwd=str(dest_path),
+                        capture_output=True,
+                        text=True,
+                        timeout=30.0,
+                    )
+                    if res.returncode == 0:
+                        out_msg = res.stdout.strip() or "Already up to date."
+                    else:
+                        res2 = subprocess.run(
+                            ["git", "pull", discovered_git_url],
+                            cwd=str(dest_path),
+                            capture_output=True,
+                            text=True,
+                            timeout=30.0,
+                        )
+                        if res2.returncode == 0:
+                            out_msg = res2.stdout.strip() or "Already up to date."
+                        else:
+                            err = res.stderr.strip() or res2.stderr.strip()
+                else:
+                    self.log(f"Cloning fresh repository from {discovered_git_url} into {dest_path}...")
+                    dest_path.mkdir(parents=True, exist_ok=True)
+                    res = subprocess.run(
+                        ["git", "clone", discovered_git_url, str(dest_path)],
+                        capture_output=True,
+                        text=True,
+                        timeout=60.0,
+                    )
+                    if res.returncode == 0:
+                        out_msg = f"Project successfully cloned from {discovered_git_url} into {dest_path}!"
+                    else:
+                        err = res.stderr.strip() or res.stdout.strip()
+            except Exception as exc:
+                err = str(exc)
+
+            def _done() -> None:
+                self.pull_lan_git_btn.config(state="normal")
+                if err:
+                    self.log(f"Peer LAN Git sync FAILED: {err}")
+                    messagebox.showerror("LAN Git Sync Failed", f"Could not sync from {discovered_git_url}:\n\n{err}")
+                else:
+                    self.log(f"LAN Git Sync SUCCESS: {out_msg}")
+                    messagebox.showinfo(
+                        "LAN Git Sync Complete",
+                        f"Project synchronized successfully via LAN Git!\n\nOutput:\n{out_msg}",
+                    )
+
+            self.root.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_close(self) -> None:
         self._save_current_config()
