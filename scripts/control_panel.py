@@ -1125,6 +1125,9 @@ class AgsyncControlPanel:
 
         try:
             subprocess.run(["git", "config", "--global", "--add", "safe.directory", "*"], capture_output=True)
+            # Ensure local git identity exists so git commit NEVER fails on author unknown
+            subprocess.run(["git", "config", "user.name", "agsync Agent"], cwd=str(repo_path), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "agent@agsync.local"], cwd=str(repo_path), capture_output=True)
 
             # Auto-ensure repository has an active commit and 'main' branch
             has_commit = subprocess.run(
@@ -1141,6 +1144,7 @@ class AgsyncControlPanel:
             has_changes = bool(status_res.stdout.strip())
             if not has_commit or has_changes:
                 self.log("Auto-committing current project state before LAN share...")
+                (repo_path / ".gitkeep").touch(exist_ok=True)
                 subprocess.run(["git", "add", "-A"], cwd=str(repo_path), capture_output=True)
                 subprocess.run(
                     ["git", "commit", "-m", "chore: snapshot project state before LAN share"],
@@ -1323,8 +1327,13 @@ class AgsyncControlPanel:
             except Exception as exc:
                 err = str(exc)
 
-            if err and ("Connection refused" in err or "unable to connect" in err):
-                self.log("LAN Git (:9418) not active on peer. Falling back to Hub Server (:8765)...")
+            if err and (
+                "Connection refused" in err
+                or "unable to connect" in err
+                or "couldn't find remote ref" in err
+                or "remote ref HEAD" in err
+            ):
+                self.log("LAN Git (:9418) not ready or empty. Falling back to Hub Server (:8765)...")
                 hub_res = pull_latest_changes(dest_path, hub_url, token=tok, log_fn=self.log)
                 if hub_res.get("status") == "ok":
                     err = None
@@ -1333,7 +1342,7 @@ class AgsyncControlPanel:
                     err = None
                     out_msg = f"Sync postponed: {hub_res.get('message')}"
                 elif hub_res.get("message"):
-                    err = f"LAN Git refused and Hub sync notice: {hub_res.get('message')}"
+                    err = f"LAN Git and Hub notice: {hub_res.get('message')}"
 
             def _done() -> None:
                 self.pull_lan_git_btn.config(state="normal")
