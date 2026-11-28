@@ -1004,13 +1004,27 @@ class AgsyncControlPanel:
 
             info = check_github_update()
             if info.get("error"):
-                self.log(f"Update check error: {info['error']}")
-                self.root.after(
-                    0,
-                    lambda: messagebox.showerror(
-                        "Update Check Failed", f"Could not check for updates:\n{info['error']}"
-                    ),
-                )
+                self.log(f"Update check notice: {info['error']}")
+
+                def _fallback_prompt() -> None:
+                    if messagebox.askyesno(
+                        "Update Connection Notice",
+                        f"GitHub API connection timed out ({info['error']}).\n\n"
+                        "Would you like to try updating directly via Git / direct download?",
+                    ):
+                        def _update_job() -> None:
+                            ok, msg = perform_update(log_fn=self.log)
+                            if ok:
+                                messagebox.showinfo(
+                                    "Update Complete",
+                                    f"Successfully updated agsync!\n\n{msg}\n\nPlease restart the panel to use the new version.",
+                                )
+                            else:
+                                messagebox.showerror("Update Failed", f"Update failed: {msg}")
+
+                        threading.Thread(target=_update_job, daemon=True).start()
+
+                self.root.after(0, _fallback_prompt)
                 return
             cur = info.get("current_version")
             if not info.get("has_update"):

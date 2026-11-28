@@ -28,10 +28,54 @@ def get_current_version() -> str:
 
 
 def check_github_update() -> dict[str, Any]:
+    # 1. If inside a Git clone, check via git first (uses git's own proxy/network config)
+    if (ROOT_DIR / ".git").exists():
+        try:
+            res = subprocess.run(
+                ["git", "ls-remote", "--tags", "origin"],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                timeout=15.0,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                tags = []
+                for line in res.stdout.splitlines():
+                    if "refs/tags/" in line and not line.endswith("^{}"):
+                        tag_name = line.split("refs/tags/")[-1].strip()
+                        tags.append(tag_name)
+                if tags:
+                    def _tup(t: str) -> tuple[int, ...]:
+                        p = t.lstrip("v").split(".")
+                        res_p = []
+                        for x in p:
+                            try:
+                                res_p.append(int(x))
+                            except ValueError:
+                                res_p.append(0)
+                        return tuple(res_p)
+
+                    latest_tag = max(tags, key=_tup)
+                    tag_clean = latest_tag.lstrip("v").strip()
+                    cur_clean = get_current_version().lstrip("v").strip()
+                    has_update = _tup(tag_clean) > _tup(cur_clean)
+                    return {
+                        "has_update": has_update,
+                        "latest_version": tag_clean,
+                        "current_version": cur_clean,
+                        "zip_url": f"https://github.com/{GITHUB_REPO}/releases/download/{latest_tag}/antigravity-multi-agent-sync-{latest_tag}.zip",
+                        "tag_name": latest_tag,
+                        "via_git": True,
+                    }
+        except Exception:
+            pass
+
+    # 2. HTTP check with system proxy support & higher timeout
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(url, headers={"User-Agent": "agsync-updater"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler())
     try:
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
+        with opener.open(req, timeout=25.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         return {"error": str(exc), "has_update": False}
@@ -95,14 +139,12 @@ def perform_update(
     # Strategy 2: Download release zip
     _log("Checking latest release on GitHub...")
     info = check_github_update()
-    if info.get("error"):
-        return False, f"Failed to check updates: {info['error']}"
-
     zip_url = info.get("zip_url")
-    if not zip_url:
-        return False, "No download asset found in latest GitHub release."
-
     latest_ver = info.get("latest_version")
+    if not zip_url:
+        _log("API rate-limited or slow connection. Trying direct GitHub archive...")
+        zip_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/main.zip"
+        latest_ver = "latest"
     _log(f"Downloading v{latest_ver} from {zip_url}...")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="agsync_update_"))
