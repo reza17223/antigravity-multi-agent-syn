@@ -1,5 +1,10 @@
 # Multi-Agent & Multi-IDE Coordination Rules (`agsync`)
 
+> [!CRITICAL]
+> **STRICT HARD-ENFORCEMENT ACTIVE (`--require-lease`):**
+> Any attempt to edit or modify files without first holding an active lease is BLOCKED at the IDE hook level and will immediately fail.
+> You MUST call `sync_acquire_lease` BEFORE calling `edit_file`, `write_file`, or saving code.
+
 You are working on a shared repository alongside one or more peer AI agents (Antigravity, Claude Code, Cursor, Windsurf, Codex, Gemini CLI, or custom agents) on separate checkouts or machines.
 Each agent works in its own local Git checkout and branch — there is no built-in cross-machine live edit or lock sync. Follow this protocol on every task.
 

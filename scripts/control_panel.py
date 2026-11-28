@@ -1035,6 +1035,7 @@ class AgsyncControlPanel:
             agent,
             "--with-antigravity-hook",
             "--with-templates",
+            "--require-lease",
         ]
         if auto_git_init:
             cmd.append("--init-if-needed")
