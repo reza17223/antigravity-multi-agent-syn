@@ -155,25 +155,37 @@ def setup_universal_clipboard(root: tk.Tk) -> None:
 
     def _on_ctrl_keypress(event: tk.Event) -> str | None:
         is_ctrl = bool(event.state & 4) or (sys.platform == "darwin" and bool(event.state & 8))
-        if not is_ctrl:
+        char = event.char or ""
+        ord_char = ord(char) if len(char) == 1 else -1
+
+        if not (is_ctrl or ord_char in (1, 3, 22, 24, 26)):
             return None
+
         w = event.widget
         if not isinstance(w, (tk.Entry, ttk.Entry, tk.Text)):
-            return None
+            focused = root.focus_get()
+            if isinstance(focused, (tk.Entry, ttk.Entry, tk.Text)):
+                w = focused
+            else:
+                return None
 
         ks = (event.keysym or "").lower()
         kc = event.keycode
 
-        if kc == 86 or ks in ("v", "arabic_ra"):
+        # Paste: keycode 86 ('V') or ASCII Ctrl+V (22) or Persian 'ر'
+        if kc in (86, 118) or ord_char == 22 or ks in ("v", "arabic_ra"):
             _do_paste(w)
             return "break"
-        elif kc == 67 or ks in ("c", "arabic_zain"):
+        # Copy: keycode 67 ('C') or ASCII Ctrl+C (3) or Persian 'و'
+        elif kc in (67, 99) or ord_char == 3 or ks in ("c", "arabic_waw", "arabic_zain"):
             _do_copy(w)
             return "break"
-        elif kc == 88 or ks in ("x", "arabic_tah"):
+        # Cut: keycode 88 ('X') or ASCII Ctrl+X (24) or Persian 'ط'
+        elif kc in (88, 120) or ord_char == 24 or ks in ("x", "arabic_tah"):
             _do_cut(w)
             return "break"
-        elif kc == 65 or ks in ("a", "arabic_sheen"):
+        # Select All: keycode 65 ('A') or ASCII Ctrl+A (1) or Persian 'ش'
+        elif kc in (65, 97) or ord_char == 1 or ks in ("a", "arabic_sheen"):
             _do_select_all(w)
             return "break"
         return None
@@ -1206,28 +1218,51 @@ class AgsyncControlPanel:
             try:
                 subprocess.run(["git", "config", "--global", "--add", "safe.directory", "*"], capture_output=True)
                 if (dest_path / ".git").exists():
-                    self.log(f"Local repo exists. Pulling latest commits from {discovered_git_url}...")
-                    res = subprocess.run(
-                        ["git", "pull", discovered_git_url, "main"],
+                    self.log(f"Local repo exists. Fetching and merging latest commits from {discovered_git_url}...")
+                    # 1. Fetch remote branch heads (completely agnostic to main vs master)
+                    res_fetch = subprocess.run(
+                        ["git", "fetch", discovered_git_url],
                         cwd=str(dest_path),
                         capture_output=True,
                         text=True,
                         timeout=30.0,
                     )
-                    if res.returncode == 0:
-                        out_msg = res.stdout.strip() or "Already up to date."
-                    else:
-                        res2 = subprocess.run(
-                            ["git", "pull", discovered_git_url],
+                    if res_fetch.returncode == 0:
+                        # 2. Merge FETCH_HEAD cleanly
+                        res_merge = subprocess.run(
+                            ["git", "merge", "FETCH_HEAD", "-m", "chore: sync from peer LAN Git", "--allow-unrelated-histories"],
                             cwd=str(dest_path),
                             capture_output=True,
                             text=True,
                             timeout=30.0,
                         )
-                        if res2.returncode == 0:
-                            out_msg = res2.stdout.strip() or "Already up to date."
+                        if res_merge.returncode == 0:
+                            out_msg = res_merge.stdout.strip() or "Already up to date."
                         else:
-                            err = res.stderr.strip() or res2.stderr.strip()
+                            err = res_merge.stderr.strip() or res_merge.stdout.strip()
+                    else:
+                        # Fetch failed, fallback to direct pull main or master
+                        res = subprocess.run(
+                            ["git", "pull", discovered_git_url, "main"],
+                            cwd=str(dest_path),
+                            capture_output=True,
+                            text=True,
+                            timeout=30.0,
+                        )
+                        if res.returncode == 0:
+                            out_msg = res.stdout.strip() or "Already up to date."
+                        else:
+                            res_master = subprocess.run(
+                                ["git", "pull", discovered_git_url, "master"],
+                                cwd=str(dest_path),
+                                capture_output=True,
+                                text=True,
+                                timeout=30.0,
+                            )
+                            if res_master.returncode == 0:
+                                out_msg = res_master.stdout.strip() or "Already up to date."
+                            else:
+                                err = res_fetch.stderr.strip() or res.stderr.strip() or res_master.stderr.strip()
                 else:
                     self.log(f"Cloning fresh repository from {discovered_git_url} into {dest_path}...")
                     dest_path.mkdir(parents=True, exist_ok=True)
