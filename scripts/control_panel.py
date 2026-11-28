@@ -449,7 +449,7 @@ class AgsyncControlPanel:
         self.root.after(1500, self._start_bg_update_check)
 
     def _start_bg_update_check(self) -> None:
-        peer_ip = self.host_ip_var.get().strip() or None
+        peer_ip = None if self.mode_var.get() == "host" else (self.host_ip_var.get().strip() or None)
 
         def _check() -> None:
             try:
@@ -1173,7 +1173,7 @@ class AgsyncControlPanel:
             )
             self._job.assign_process(self.git_daemon_proc)
             self.git_daemon_btn.config(text="⏹️ Stop LAN Git (:9418)")
-            lan_ip = self.host_ip_var.get().strip() or detect_lan_ip()
+            lan_ip = detect_lan_ip()
             git_url = f"git://{lan_ip}:9418/{repo_name}"
             self.log(f"📡 LAN Git Server running on {git_url}")
             self.log(f"Peer can pull using: git pull {git_url} main")
@@ -1202,15 +1202,23 @@ class AgsyncControlPanel:
 
         # 1. Discover published LAN Git URL from hub context
         discovered_git_url = ""
+        my_lan_ip = detect_lan_ip()
         try:
             client = SyncClient(hub_url, token=tok, timeout=2.5)
             ctx = client.get_context("lan_git:url")
             if ctx.get("found"):
-                discovered_git_url = str(ctx.get("value") or "").strip()
+                val = str(ctx.get("value") or "").strip()
+                # Ensure we don't accidentally pull from ourselves!
+                if val and my_lan_ip not in val and "127.0.0.1" not in val and "localhost" not in val:
+                    discovered_git_url = val
         except Exception:
             pass
 
-        peer_ip = self.host_ip_var.get().strip() or "192.168.1.130"
+        if self.mode_var.get() == "host":
+            peer_ip = "192.168.1.182"
+        else:
+            peer_ip = self.host_ip_var.get().strip() or "192.168.1.130"
+
         repo_val = self.repo_var.get().strip() or str(ROOT_DIR)
         repo_name = Path(repo_val).name
         default_url = f"git://{peer_ip}:9418/{repo_name}"
@@ -1732,7 +1740,7 @@ class AgsyncControlPanel:
 
     def check_updates_ui(self) -> None:
         self.log("Checking GitHub and LAN for agsync updates...")
-        peer_ip = self.host_ip_var.get().strip() or None
+        peer_ip = None if self.mode_var.get() == "host" else (self.host_ip_var.get().strip() or None)
 
         def _worker() -> None:
             from scripts.updater import check_github_update, perform_update
