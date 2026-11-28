@@ -21,6 +21,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from agsync import __version__
+
 from agsync.adapters.network import (
     WindowsJobObject,
     build_opener_for_url,
@@ -232,7 +234,7 @@ class AgsyncControlPanel:
         if initial_mode in ("host", "peer"):
             self.cfg["mode"] = initial_mode
 
-        self.root.title("agsync Unified Control Panel")
+        self.root.title(f"agsync Unified Control Panel v{__version__}")
         self.root.geometry("860x700")
         self.root.minsize(760, 600)
 
@@ -256,7 +258,7 @@ class AgsyncControlPanel:
         header = ttk.Frame(self.root)
         header.pack(fill="x", **pad)
 
-        ttk.Label(header, text="agsync Control Panel", font=("Segoe UI", 14, "bold")).pack(side="left")
+        ttk.Label(header, text=f"agsync Control Panel v{__version__}", font=("Segoe UI", 14, "bold")).pack(side="left")
         ttk.Button(header, text="🚀 Check for Updates", command=self.check_updates_ui).pack(side="left", padx=16)
 
         self.status_lbl = tk.Label(
