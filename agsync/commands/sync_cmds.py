@@ -84,6 +84,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         serve_argv.append("--no-case-insensitive")
     if args.discover:
         serve_argv.extend(["--discover", "--discovery-port", str(args.discovery_port)])
+    if getattr(args, "repo", None):
+        serve_argv.extend(["--repo", args.repo])
     return server_main(serve_argv)
 
 

@@ -90,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_DISCOVERY_PORT,
     )
+    p_serve.add_argument(
+        "--repo",
+        default=None,
+        help="Attach project repository to host for bundle sharing.",
+    )
 
     # register
     p_reg = sub.add_parser("register", parents=[common], help="Register or heartbeat agent.")

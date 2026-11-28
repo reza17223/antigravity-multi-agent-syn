@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "antigravity-multi-agent-sync"
-version = "0.4.0"
+version = "0.4.1"
 description = "Zero-dependency LAN & remote coordination hub, MCP server, multi-IDE hook proxy, CLI, and GUI panel for concurrent AI coding agents."
 readme = "README.md"
 requires-python = ">=3.12"
