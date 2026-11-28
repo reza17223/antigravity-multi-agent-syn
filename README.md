@@ -71,4 +71,3 @@ Without coordination, agents on different machines don't know what the other is 
 - **Persian README**: [README.fa.md](README.fa.md)
 - **Step-by-Step Setup Guide**: [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) | [راهنمای فارسی](docs/SETUP_GUIDE.fa.md)
 - **How It Works Under the Hood**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [معماری فارسی](docs/ARCHITECTURE.fa.md)
-- **Roadmap**: [docs/ROADMAP.fa.md](docs/ROADMAP.fa.md)

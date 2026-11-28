@@ -69,7 +69,5 @@
 ## راهنماهای بیشتر
 
 - **نسخه انگلیسی README:** [README.md](README.md)
-- **معرفی ساده و کامل فارسی:** [docs/OVERVIEW.fa.md](docs/OVERVIEW.fa.md)
 - **راهنمای گام‌به‌گام نصب:** [docs/SETUP_GUIDE.fa.md](docs/SETUP_GUIDE.fa.md) | [English](docs/SETUP_GUIDE.md)
 - **معماری و پشت صحنه:** [docs/ARCHITECTURE.fa.md](docs/ARCHITECTURE.fa.md) | [English](docs/ARCHITECTURE.md)
-- **نقشه راه:** [docs/ROADMAP.fa.md](docs/ROADMAP.fa.md)
