@@ -715,13 +715,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById("tasks-count").textContent = String(items.length);
       const el = document.getElementById("tasks-body");
       if (!items.length) { el.innerHTML = '<p class="empty">No tasks created yet.</p>'; return; }
-      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Owner</th></tr></thead><tbody>' +
-        items.map(t => `<tr>
-          <td><code>${esc(t.task_id)}</code></td>
-          <td>${esc(t.title)}</td>
-          <td><span class="badge ${t.status === "done" ? "ok" : "warn"}">${esc(t.status)}</span></td>
-          <td><code>${esc(t.owner_id || "-")}</code></td>
-        </tr>`).join("") + "</tbody></table></div>";
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Created By (سازنده)</th><th>Assignee (انجام‌دهنده)</th></tr></thead><tbody>' +
+        items.map(t => {
+          let stBadge = "info";
+          let stLabel = esc(t.status);
+          if (t.status === "done") { stBadge = "ok"; stLabel = "done (تکمیل)"; }
+          else if (t.status === "in_progress") { stBadge = "warn"; stLabel = "in_progress (در حال انجام)"; }
+          else if (t.status === "open") { stBadge = "info"; stLabel = "open (آزاد)"; }
+          const assignee = t.owner_id ? `<code>${esc(t.owner_id)}</code>` : '<span class="badge info">Unassigned (تعیین‌نشده)</span>';
+          return `<tr>
+            <td><code>${esc(t.task_id)}</code></td>
+            <td>${esc(t.title)}</td>
+            <td><span class="badge ${stBadge}">${stLabel}</span></td>
+            <td><code>${esc(t.created_by || "-")}</code></td>
+            <td>${assignee}</td>
+          </tr>`;
+        }).join("") + "</tbody></table></div>";
     }
 
     function renderContext(items) {
