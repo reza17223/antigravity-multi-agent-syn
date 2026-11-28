@@ -400,7 +400,7 @@ class AgsyncControlPanel:
         self.git_daemon_btn.pack(side="left", padx=4)
 
         self.sync_btn = ttk.Button(
-            r_sync, text="🔄 Sync / Pull", command=self.pull_lan_git_ui
+            r_sync, text="🔄 Safe Manual Sync", command=self.pull_lan_git_ui
         )
         self.sync_btn.pack(side="left", padx=4)
         self.clone_btn = self.sync_btn
@@ -1242,6 +1242,40 @@ class AgsyncControlPanel:
                 return
 
         dest_path = Path(dest_val)
+
+        # Safety Check: Prevent pulling incomplete code if peer is currently working on files
+        my_agent = self.agent_id_var.get().strip() or socket.gethostname()
+        try:
+            client = SyncClient(hub_url, token=tok, timeout=2.5)
+            snap = client.snapshot(agent_id=my_agent)
+            active_leases = snap.get("active_leases") or []
+            peer_leases = [l for l in active_leases if l.get("owner_id") != my_agent]
+            in_prog_tasks = [
+                t for t in snap.get("tasks", [])
+                if t.get("status") == "in_progress" and t.get("assignee") != my_agent
+            ]
+
+            if interactive and (peer_leases or in_prog_tasks):
+                details = []
+                for l in peer_leases:
+                    details.append(f"• File locked: {l.get('resource_norm')} (by {l.get('owner_id')})")
+                for t in in_prog_tasks:
+                    details.append(f"• Task in-progress: {t.get('title')} (by {t.get('assignee') or 'peer'})")
+
+                detail_str = "\n".join(details)
+                msg = (
+                    "⚠️ Peer is actively working on the project!\n\n"
+                    f"{detail_str}\n\n"
+                    "Syncing right now may bring incomplete or half-baked code for these parts.\n\n"
+                    "Would you like to wait for peer to complete? (Recommended: click 'No' to cancel)\n"
+                    "Or force sync anyway? ('Yes')"
+                )
+                if not messagebox.askyesno("Peer Work in Progress", msg, parent=self.root):
+                    self.log("Manual sync canceled to avoid pulling incomplete peer code.")
+                    return
+        except Exception:
+            pass
+
         self.pull_lan_git_btn.config(state="disabled")
         self.log(f"Connecting to Peer LAN Git: {discovered_git_url} -> {dest_path}...")
 
