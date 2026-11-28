@@ -148,20 +148,28 @@ def pull_latest_changes(
     if not (repo / ".git").exists():
         raise RuntimeError(f"'{repo}' is not a Git repository.")
 
-    # 1. Check if git status has tracked uncommitted changes
-    st = subprocess.run(["git", "status", "--porcelain", "-uno"], cwd=str(repo), capture_output=True, text=True)
+    # 1. Auto-snapshot local tracked/untracked modifications before pulling
+    st = subprocess.run(["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True)
     if st.returncode == 0 and st.stdout.strip():
-        _log("Local working tree has uncommitted changes; sync postponed.")
-        return {"status": "busy", "message": "Local repository has uncommitted changes. Save or commit before pulling."}
+        _log("Auto-snapshotting local modifications before peer sync...")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "--no-verify", "-m", "chore: auto-snapshot local work before peer sync"],
+            cwd=str(repo),
+            capture_output=True,
+        )
 
-    # 2. Try git pull if a remote exists
+    # 2. Try git pull if tracking remote exists
     remotes = subprocess.run(["git", "remote"], cwd=str(repo), capture_output=True, text=True)
     if remotes.returncode == 0 and remotes.stdout.strip():
-        res = subprocess.run(["git", "pull", "--rebase=false"], cwd=str(repo), capture_output=True, text=True)
-        if res.returncode == 0:
-            out = res.stdout.strip()
-            _log(f"Git pull OK: {out}")
-            return {"status": "ok", "output": out}
+        try:
+            res = subprocess.run(["git", "pull", "--rebase=false"], cwd=str(repo), capture_output=True, text=True, timeout=5.0)
+            if res.returncode == 0:
+                out = res.stdout.strip()
+                _log(f"Git pull OK: {out}")
+                return {"status": "ok", "output": out}
+        except Exception:
+            pass
 
     # 3. Pull bundle from host hub
     try:

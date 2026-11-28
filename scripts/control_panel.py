@@ -1274,25 +1274,54 @@ class AgsyncControlPanel:
                 msg = (
                     "⚠️ Peer is actively working on the project!\n\n"
                     f"{detail_str}\n\n"
-                    "Syncing right now may bring incomplete or half-baked code for these parts.\n\n"
-                    "Would you like to wait for peer to complete? (Recommended: click 'No' to cancel)\n"
-                    "Or force sync anyway? ('Yes')"
+                    "Syncing right now may bring incomplete or half-baked code.\n\n"
+                    "Do you want to Force Sync anyway?\n"
+                    "• Click 'Yes' to Force Sync right now.\n"
+                    "• Click 'No' to cancel and wait for peer to finish."
                 )
                 if not messagebox.askyesno("Peer Work in Progress", msg, parent=self.root):
                     self.log("Manual sync canceled to avoid pulling incomplete peer code.")
+                    messagebox.showinfo(
+                        "Sync Postponed",
+                        "Manual sync was canceled to avoid pulling incomplete peer code while your peer is actively working.\n\n"
+                        "You can safely click Manual Sync again once your peer finishes and releases leases.",
+                        parent=self.root,
+                    )
                     return
         except Exception:
             pass
 
-        self.pull_lan_git_btn.config(state="disabled")
-        self.log(f"Connecting to Peer LAN Git: {discovered_git_url} -> {dest_path}...")
+        self.pull_lan_git_btn.config(text="⏳ Syncing...", state="disabled")
+        self.log(f"Connecting to Peer: {discovered_git_url} -> {dest_path}...")
 
         def _worker() -> None:
             err = None
             out_msg = ""
             try:
                 subprocess.run(["git", "config", "--global", "--add", "safe.directory", "*"], capture_output=True)
-                if (dest_path / ".git").exists():
+                
+                # Fast TCP connectivity test on LAN git port (:9418) to avoid slow 30s hangs
+                parsed_git = urllib.parse.urlparse(discovered_git_url)
+                git_host = parsed_git.hostname or "127.0.0.1"
+                git_port = parsed_git.port or 9418
+                port_9418_open = False
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.settimeout(1.2)
+                        port_9418_open = (s.connect_ex((git_host, git_port)) == 0)
+                except Exception:
+                    port_9418_open = False
+
+                if not port_9418_open:
+                    self.log(f"LAN Git (:9418) not reachable on {git_host}. Fast-falling back to Hub Server (:8765)...")
+                    hub_res = pull_latest_changes(dest_path, hub_url, token=tok, log_fn=self.log)
+                    if hub_res.get("status") == "ok":
+                        out_msg = f"Synced via Hub: {hub_res.get('output', 'Already up to date.')}"
+                    elif hub_res.get("status") == "busy":
+                        out_msg = f"Sync postponed: {hub_res.get('message')}"
+                    else:
+                        err = hub_res.get("message") or "Could not sync via Hub Server."
+                elif (dest_path / ".git").exists():
                     self.log(f"Local repo exists. Fetching and merging latest commits from {discovered_git_url}...")
                     
                     # Ensure persistent Git remote 'peer' is configured so git remote -v and IDE tools see it
@@ -1305,7 +1334,7 @@ class AgsyncControlPanel:
                         self.log("Auto-snapshotting local untracked/modified files before sync...")
                         subprocess.run(["git", "add", "-A"], cwd=str(dest_path), capture_output=True)
                         subprocess.run(
-                            ["git", "commit", "-m", "chore: auto-snapshot local work before peer sync"],
+                            ["git", "commit", "--no-verify", "-m", "chore: auto-snapshot local work before peer sync"],
                             cwd=str(dest_path),
                             capture_output=True,
                         )
@@ -1316,7 +1345,7 @@ class AgsyncControlPanel:
                         cwd=str(dest_path),
                         capture_output=True,
                         text=True,
-                        timeout=30.0,
+                        timeout=6.0,
                     )
                     if res_fetch.returncode == 0:
                         # 2. Merge FETCH_HEAD cleanly
@@ -1325,7 +1354,7 @@ class AgsyncControlPanel:
                             cwd=str(dest_path),
                             capture_output=True,
                             text=True,
-                            timeout=30.0,
+                            timeout=6.0,
                         )
                         if res_merge.returncode == 0:
                             out_msg = res_merge.stdout.strip() or "Already up to date."
@@ -1336,7 +1365,7 @@ class AgsyncControlPanel:
                             if lines and all(".gitignore" in ln or "AGENTS.md" in ln for ln in lines if ln.startswith("UU") or ln.startswith("AA") or ln.startswith("DU")):
                                 subprocess.run(["git", "checkout", "--theirs", ".gitignore"], cwd=str(dest_path), capture_output=True)
                                 subprocess.run(["git", "add", "-A"], cwd=str(dest_path), capture_output=True)
-                                res_c = subprocess.run(["git", "commit", "-m", "chore: resolved merge conflict"], cwd=str(dest_path), capture_output=True, text=True)
+                                res_c = subprocess.run(["git", "commit", "--no-verify", "-m", "chore: resolved merge conflict"], cwd=str(dest_path), capture_output=True, text=True)
                                 if res_c.returncode == 0:
                                     out_msg = "Merged cleanly (auto-resolved config conflict)."
                                 else:
@@ -1350,7 +1379,7 @@ class AgsyncControlPanel:
                             cwd=str(dest_path),
                             capture_output=True,
                             text=True,
-                            timeout=30.0,
+                            timeout=6.0,
                         )
                         if res.returncode == 0:
                             out_msg = res.stdout.strip() or "Already up to date."
@@ -1360,7 +1389,7 @@ class AgsyncControlPanel:
                                 cwd=str(dest_path),
                                 capture_output=True,
                                 text=True,
-                                timeout=30.0,
+                                timeout=6.0,
                             )
                             if res_master.returncode == 0:
                                 out_msg = res_master.stdout.strip() or "Already up to date."
@@ -1373,7 +1402,7 @@ class AgsyncControlPanel:
                         ["git", "clone", discovered_git_url, str(dest_path)],
                         capture_output=True,
                         text=True,
-                        timeout=60.0,
+                        timeout=15.0,
                     )
                     if res.returncode == 0:
                         out_msg = f"Project successfully cloned from {discovered_git_url} into {dest_path}!"
@@ -1401,17 +1430,18 @@ class AgsyncControlPanel:
                     err = f"LAN Git and Hub notice: {hub_res.get('message')}"
 
             def _done() -> None:
-                self.pull_lan_git_btn.config(state="normal")
+                self.pull_lan_git_btn.config(text="🔄 Safe Manual Sync", state="normal")
                 if err:
                     self.log(f"Peer LAN Git sync FAILED: {err}")
                     if interactive:
-                        messagebox.showerror("LAN Git Sync Failed", f"Could not sync from {discovered_git_url}:\n\n{err}")
+                        messagebox.showerror("LAN Git Sync Failed", f"Could not sync from {discovered_git_url}:\n\n{err}", parent=self.root)
                 else:
                     self.log(f"LAN Git Sync SUCCESS: {out_msg}")
                     if interactive:
                         messagebox.showinfo(
                             "LAN Git Sync Complete",
-                            f"Project synchronized successfully via LAN Git!\n\nOutput:\n{out_msg}",
+                            f"Project synchronized successfully!\n\nOutput:\n{out_msg}",
+                            parent=self.root,
                         )
 
             self.root.after(0, _done)
