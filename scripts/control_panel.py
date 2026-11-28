@@ -89,6 +89,7 @@ class AgsyncControlPanel:
         header.pack(fill="x", **pad)
 
         ttk.Label(header, text="agsync Control Panel", font=("Segoe UI", 14, "bold")).pack(side="left")
+        ttk.Button(header, text="🚀 Check for Updates", command=self.check_updates_ui).pack(side="left", padx=16)
 
         self.status_lbl = tk.Label(
             header,
@@ -994,6 +995,57 @@ class AgsyncControlPanel:
                     time.sleep(3.0)
 
         threading.Thread(target=_loop, daemon=True).start()
+
+    def check_updates_ui(self) -> None:
+        self.log("Checking GitHub for agsync updates...")
+
+        def _worker() -> None:
+            from scripts.updater import check_github_update, perform_update
+
+            info = check_github_update()
+            if info.get("error"):
+                self.log(f"Update check error: {info['error']}")
+                self.root.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Update Check Failed", f"Could not check for updates:\n{info['error']}"
+                    ),
+                )
+                return
+            cur = info.get("current_version")
+            if not info.get("has_update"):
+                self.log(f"agsync is up to date (v{cur}).")
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Up to Date", f"You are running the latest version of agsync (v{cur})."
+                    ),
+                )
+                return
+
+            latest = info.get("latest_version")
+            self.log(f"New version available: v{latest} (current: v{cur})")
+
+            def _prompt() -> None:
+                if messagebox.askyesno(
+                    "Update Available",
+                    f"A new version of agsync is available!\n\nCurrent version: v{cur}\nLatest version: v{latest}\n\nWould you like to install the update now?",
+                ):
+                    def _update_job() -> None:
+                        ok, msg = perform_update(log_fn=self.log)
+                        if ok:
+                            messagebox.showinfo(
+                                "Update Complete",
+                                f"Successfully updated to v{latest}!\n\nPlease restart the panel to use the new version.",
+                            )
+                        else:
+                            messagebox.showerror("Update Failed", f"Update failed: {msg}")
+
+                    threading.Thread(target=_update_job, daemon=True).start()
+
+            self.root.after(0, _prompt)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
 
 def main() -> None:

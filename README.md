@@ -35,7 +35,12 @@ Without coordination, agents on different machines don't know what the other is 
    - Open **`Start_Sync_Panel.bat`** and choose **`PEER (Client)`**.
    - **Same Wi-Fi/LAN**: Enter the Host's IP (or click **`Discover LAN Hub`**), paste the token, and click **`Test Connection (TCP + /health)`**.
    - **Remote (different location)**: On the Host click **`Cloudflare Tunnel`** + **`Create Join Link...`**, send the link to Person B, and on Person B click **`Join Remote Hub...`**.
-   - Select your local project folder and click **`Connect Antigravity MCP`** and **`Install Repo Hooks & Templates`**.
+   - Select your local project folder and click **`Connect Antigravity MCP`** and **`Install Repo Hooks & Templates`** (or click **`📥 Clone Project from Host`** to clone the project automatically).
+
+### Updating to New Versions (No Manual ZIP Download Required)
+1. **In-App 1-Click Update:** Click the **`🚀 Check for Updates`** button at the top of the Control Panel.
+2. **Windows Quick Batch:** Double-click **`Update_App.bat`** in the repository root.
+3. **Command Line:** Run `python scripts/updater.py`.
 
 ### Option 2: Using the Terminal (macOS / Linux / Windows)
 
