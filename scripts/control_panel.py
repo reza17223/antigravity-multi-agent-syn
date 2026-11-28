@@ -24,6 +24,7 @@ if str(ROOT_DIR) not in sys.path:
 from agsync.adapters.network import (
     WindowsJobObject,
     build_opener_for_url,
+    inspect_pid_lockfile,
     inspect_windows_network_profiles,
     tcp_check,
     validate_port,
@@ -567,6 +568,29 @@ class AgsyncControlPanel:
             self.token_var.set(secrets.token_urlsafe(18))
             self.log("Auto-generated Bearer token for secure LAN binding (share with Peer).")
         self._save_current_config()
+
+        # Clean up any orphaned or zombie server holding state.db.pid
+        db_path = default_data_dir() / "state.db"
+        try:
+            pid_info = inspect_pid_lockfile(db_path)
+            if pid_info.get("alive"):
+                existing_pid = pid_info.get("data", {}).get("pid")
+                if existing_pid and existing_pid != os.getpid():
+                    self.log(f"Terminating orphaned hub server process (PID {existing_pid})...")
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/F", "/PID", str(existing_pid)], capture_output=True)
+                    else:
+                        import signal
+                        os.kill(existing_pid, signal.SIGKILL)
+                    time.sleep(0.6)
+            elif pid_info.get("exists") and not pid_info.get("alive"):
+                pid_path = Path(pid_info["path"])
+                try:
+                    pid_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except Exception as exc:
+            self.log(f"PID cleanup notice: {exc}")
 
         cmd = [sys.executable, "-m", "agsync.cli", "serve", "--host", "0.0.0.0", "--port", str(port_num)]
         if self.discover_chk_var.get():
