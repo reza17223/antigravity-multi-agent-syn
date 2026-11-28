@@ -1093,6 +1093,31 @@ class AgsyncControlPanel:
 
         try:
             subprocess.run(["git", "config", "--global", "--add", "safe.directory", "*"], capture_output=True)
+
+            # Auto-ensure repository has an active commit and 'main' branch
+            has_commit = subprocess.run(
+                ["git", "rev-parse", "--verify", "HEAD"],
+                cwd=str(repo_path),
+                capture_output=True,
+            ).returncode == 0
+            status_res = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+            )
+            has_changes = bool(status_res.stdout.strip())
+            if not has_commit or has_changes:
+                self.log("Auto-committing current project state before LAN share...")
+                subprocess.run(["git", "add", "-A"], cwd=str(repo_path), capture_output=True)
+                subprocess.run(
+                    ["git", "commit", "-m", "chore: snapshot project state before LAN share"],
+                    cwd=str(repo_path),
+                    capture_output=True,
+                )
+                subprocess.run(["git", "branch", "-M", "main"], cwd=str(repo_path), capture_output=True)
+                self.log("Auto-commit complete. Branch 'main' ready for peer sync.")
+
             parent_dir = str(repo_path.parent)
             repo_name = repo_path.name
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
