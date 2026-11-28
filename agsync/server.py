@@ -130,7 +130,11 @@ def execute_mcp_tool(
     try:
         if tool_name == "sync_status":
             aid = args.get("agent_id") or default_agent
-            return _tool_result(store.snapshot(agent_id=aid))
+            snap = store.snapshot(agent_id=aid)
+            if aid:
+                snap["caller_agent_id"] = aid
+                snap["you"] = aid
+            return _tool_result(snap)
 
         if tool_name == "sync_register":
             aid = need_agent("agent_id")
@@ -722,8 +726,18 @@ class CoordinationHandler(BaseHTTPRequestHandler):
                 return False
             return True
         auth = self.headers.get("Authorization", "")
+        provided = ""
         if auth.startswith("Bearer "):
             provided = auth[len("Bearer ") :].strip()
+        if not provided and "?" in self.path:
+            try:
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                provided = qs.get("token", [""])[0].strip()
+            except Exception:
+                pass
+
+        if provided:
             if hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
                 return True
             if not admin_required and self.server.invites.verify_agent_token(provided) is not None:

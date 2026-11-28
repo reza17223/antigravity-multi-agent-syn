@@ -336,6 +336,8 @@ class AgsyncControlPanel:
         )
         ttk.Button(row2, text="Run Doctor", command=self.run_doctor_ui).pack(side="left", padx=4)
         ttk.Button(row2, text="Check Live Agents & Locks", command=self.check_status).pack(side="left", padx=4)
+        ttk.Button(row2, text="📨 Inbox / پیام‌ها", command=self.check_inbox_ui).pack(side="left", padx=4)
+        ttk.Button(row2, text="💬 Send Message...", command=self.send_message_dialog).pack(side="left", padx=4)
         ttk.Button(row2, text="Open Web Dashboard", command=self.open_dashboard).pack(side="left", padx=4)
 
         self.discover_chk_var = tk.BooleanVar(value=bool(self.cfg.get("discover", True)))
@@ -404,6 +406,8 @@ class AgsyncControlPanel:
         log_top = ttk.Frame(log_frame)
         log_top.pack(fill="x", padx=6, pady=(4, 0))
         ttk.Button(log_top, text="Clear Logs", command=self.clear_logs).pack(side="right")
+        self.auto_scroll_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(log_top, text="Auto-Scroll", variable=self.auto_scroll_var).pack(side="right", padx=6)
 
         self.log_box = scrolledtext.ScrolledText(
             log_frame,
@@ -515,11 +519,14 @@ class AgsyncControlPanel:
             self.log_box.insert("end", self.log_queue.get_nowait())
             inserted += 1
         if inserted:
+            y_view = self.log_box.yview()
+            is_at_bottom = y_view[1] >= 0.96
             total_lines = int(self.log_box.index("end-1c").split(".")[0])
             if total_lines > MAX_LOG_LINES:
                 excess = total_lines - MAX_LOG_LINES
                 self.log_box.delete("1.0", f"{excess + 1}.0")
-            self.log_box.see("end")
+            if getattr(self, "auto_scroll_var", None) and self.auto_scroll_var.get() and is_at_bottom:
+                self.log_box.see("end")
         self.root.after(150, self._poll_logs)
 
     def clear_logs(self) -> None:
@@ -775,9 +782,89 @@ class AgsyncControlPanel:
     def open_dashboard(self) -> None:
         ip = "127.0.0.1" if self.mode_var.get() == "host" else self.host_ip_var.get().strip()
         port = self.port_var.get().strip() or "8765"
+        tok = self.token_var.get().strip()
         url = f"http://{ip}:{port}/dashboard"
+        if tok:
+            url += f"?token={tok}#token={tok}"
         self.log(f"Opening dashboard: {url}")
         webbrowser.open(url)
+
+    def check_inbox_ui(self) -> None:
+        ip = "127.0.0.1" if self.mode_var.get() == "host" else self.host_ip_var.get().strip()
+        port = self.port_var.get().strip() or "8765"
+        url = f"http://{ip}:{port}"
+        tok = self.token_var.get().strip()
+        agent = self.agent_var.get().strip() or default_agent_id()
+
+        def _worker() -> None:
+            try:
+                client = SyncClient(url, token=tok or None, timeout=5.0)
+                res = client.poll_messages(agent, unread_only=False)
+                msgs = res.get("messages", [])
+                if not msgs:
+                    self.log(f"Inbox for '{agent}': No messages found.")
+                    self.root.after(0, lambda: messagebox.showinfo("Inbox", f"No messages found for '{agent}'."))
+                    return
+                lines = []
+                for m in msgs:
+                    sender = m.get("sender_id", "unknown")
+                    body = m.get("body", "")
+                    lines.append(f"• From: {sender}\n  {body}")
+                full_text = "\n\n".join(lines)
+                self.log(f"Inbox for '{agent}' ({len(msgs)} messages):\n{full_text}")
+                self.root.after(0, lambda: messagebox.showinfo(f"Inbox ({len(msgs)} messages)", full_text))
+            except Exception as exc:
+                self.log(f"Inbox check error: {exc}")
+                self.root.after(0, lambda: messagebox.showerror("Inbox Error", str(exc)))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def send_message_dialog(self) -> None:
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Send Sync Message")
+        dlg.geometry("440x220")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text="Recipient Agent ID (e.g. soheilnasiri or *):").pack(anchor="w", padx=12, pady=(12, 2))
+        recip_var = tk.StringVar(value="soheilnasiri" if self.agent_var.get().strip() != "soheilnasiri" else "desktop-146aj7o")
+        ttk.Entry(dlg, textvariable=recip_var, width=35).pack(anchor="w", padx=12, pady=2)
+
+        ttk.Label(dlg, text="Message Body:").pack(anchor="w", padx=12, pady=(8, 2))
+        body_var = tk.StringVar()
+        body_entry = ttk.Entry(dlg, textvariable=body_var, width=45)
+        body_entry.pack(fill="x", padx=12, pady=2)
+        body_entry.focus_set()
+
+        def _do_send() -> None:
+            to_agent = recip_var.get().strip()
+            body_txt = body_var.get().strip()
+            if not to_agent or not body_txt:
+                messagebox.showerror("Error", "Please provide recipient and message body.", parent=dlg)
+                return
+            dlg.destroy()
+            ip = "127.0.0.1" if self.mode_var.get() == "host" else self.host_ip_var.get().strip()
+            port = self.port_var.get().strip() or "8765"
+            url = f"http://{ip}:{port}"
+            tok = self.token_var.get().strip()
+            from_agent = self.agent_var.get().strip() or default_agent_id()
+
+            def _send_worker() -> None:
+                try:
+                    client = SyncClient(url, token=tok or None, timeout=5.0)
+                    client.send_message(from_agent, to_agent, body_txt)
+                    self.log(f"Message sent to '{to_agent}': {body_txt}")
+                    self.root.after(0, lambda: messagebox.showinfo("Sent", f"Message sent to '{to_agent}' successfully!"))
+                except Exception as exc:
+                    self.log(f"Failed to send message: {exc}")
+                    self.root.after(0, lambda: messagebox.showerror("Send Error", str(exc)))
+
+            threading.Thread(target=_send_worker, daemon=True).start()
+
+        btn_row = ttk.Frame(dlg)
+        btn_row.pack(fill="x", padx=12, pady=16)
+        ttk.Button(btn_row, text="Send Message", command=_do_send).pack(side="right", padx=4)
+        ttk.Button(btn_row, text="Cancel", command=dlg.destroy).pack(side="right", padx=4)
 
     def _browse_repo(self) -> None:
         chosen = filedialog.askdirectory(title="Select Target Git Project Repository")
@@ -1172,13 +1259,32 @@ class AgsyncControlPanel:
                     client = SyncClient(url, token=tok, timeout=20.0)
                     events = client.get_events(since_id=last_event_id, wait=10.0, limit=50)
                     for ev in events:
-                        ev_id = int(ev.get("event_id", 0))
+                        ev_id = int(ev.get("event_id") or ev.get("id") or 0)
                         if ev_id > last_event_id:
                             last_event_id = ev_id
-                        ev_type = ev.get("event_type")
-                        owner = ev.get("agent_id")
+                        ev_type = str(ev.get("event_type") or "")
+                        actor = str(ev.get("actor_id") or ev.get("agent_id") or "")
+                        target_id = str(ev.get("target_id") or "")
+                        summary = str(ev.get("summary") or "")
                         payload = ev.get("payload") or {}
 
+                        # Stream real-time coordination activity to logs
+                        if ev_type == "message_sent":
+                            self.log(f"💬 [Hub Msg #{ev_id}] {actor} -> {target_id}: {payload.get('body') or summary}")
+                        elif ev_type == "lease_acquired":
+                            self.log(f"🔒 [Hub Lock #{ev_id}] {actor} locked '{target_id}'")
+                        elif ev_type in ("lease_released", "lease_expired"):
+                            self.log(f"🔓 [Hub Unlock #{ev_id}] Lock on '{target_id}' freed by {actor}")
+                        elif ev_type == "agent_registered":
+                            st = payload.get("status", "online")
+                            self.log(f"👤 [Hub Agent #{ev_id}] Agent '{actor}' registered ({st})")
+                        elif ev_type == "task_created":
+                            self.log(f"📋 [Hub Task #{ev_id}] Task created: {payload.get('title') or target_id} (by {actor})")
+                        elif ev_type == "task_updated":
+                            st = payload.get("status") or ""
+                            self.log(f"📋 [Hub Task #{ev_id}] Task {target_id} status: {st} (by {actor})")
+
+                        owner = actor
                         if ev_type == "task_updated" and payload.get("status") == "done" and owner != my_agent:
                             has_lease = False
                             try:

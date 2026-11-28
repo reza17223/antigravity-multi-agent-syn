@@ -323,6 +323,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     const savedTok = sessionStorage.getItem("agsync_token") || "";
     if (savedTok) tokenInput.value = savedTok;
+    const urlParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const paramTok = urlParams.get("token") || hashParams.get("token");
+    if (paramTok) {
+      tokenInput.value = paramTok;
+      sessionStorage.setItem("agsync_token", paramTok);
+    }
 
     function getAuthHeaders() {
       const headers = {};
@@ -481,10 +488,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function loadSnapshot({ seedEvents = false } = {}) {
       const headers = getAuthHeaders();
+      const tok = tokenInput.value.trim();
+      const tokQuery = tok ? ("?token=" + encodeURIComponent(tok)) : "";
       try {
         const [hRes, sRes] = await Promise.all([
           fetch("/health"),
-          fetch("/snapshot", { headers })
+          fetch("/snapshot" + tokQuery, { headers })
         ]);
         const health = await hRes.json();
         const bootShort = health.boot_id ? (" | Boot: " + health.boot_id.slice(0, 8)) : "";
@@ -492,7 +501,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           `v${health.version}${bootShort} | Online: ${health.online_agents} | Leases: ${health.active_leases} | Tasks: ${health.tasks_count}`;
 
         if (sRes.status === 401) {
-          showErr("Authentication required: enter the hub Bearer token above.");
+          showErr("🔒 احراز هویت لازم است: لطفاً توکن (Bearer Token) را در کادر بالای صفحه وارد کنید. / Authentication required: enter token above.");
           return false;
         }
         if (!sRes.ok) {
