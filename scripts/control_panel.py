@@ -379,23 +379,20 @@ class AgsyncControlPanel:
         r_sync = ttk.Frame(ag_frame)
         r_sync.pack(fill="x", padx=6, pady=4)
         ttk.Label(r_sync, text="Team Sync:").pack(side="left", padx=(0, 6))
-        self.clone_btn = ttk.Button(
-            r_sync, text="📥 Clone Project from Host", command=self.clone_project_ui
-        )
-        self.clone_btn.pack(side="left", padx=4)
-        self.sync_btn = ttk.Button(
-            r_sync, text="🔄 Pull / Sync Changes", command=self.sync_changes_ui
-        )
-        self.sync_btn.pack(side="left", padx=4)
+
         self.git_daemon_proc: subprocess.Popen | None = None
         self.git_daemon_btn = ttk.Button(
             r_sync, text="📡 Share Git on LAN", command=self.toggle_git_daemon_ui
         )
         self.git_daemon_btn.pack(side="left", padx=4)
-        self.pull_lan_git_btn = ttk.Button(
-            r_sync, text="📥 Pull from Peer LAN Git", command=self.pull_lan_git_ui
+
+        self.sync_btn = ttk.Button(
+            r_sync, text="🔄 Sync / Pull", command=self.pull_lan_git_ui
         )
-        self.pull_lan_git_btn.pack(side="left", padx=4)
+        self.sync_btn.pack(side="left", padx=4)
+        self.clone_btn = self.sync_btn
+        self.pull_lan_git_btn = self.sync_btn
+
         self.auto_sync_var = tk.BooleanVar(value=True)
         self.pending_sync = False
         ttk.Checkbutton(
