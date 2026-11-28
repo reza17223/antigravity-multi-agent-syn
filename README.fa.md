@@ -1,119 +1,75 @@
-# `agsync` — هماهنگ‌ساز جامع چند-ایجنتی و چند-IDE
+# agsync — همکاری هم‌زمان چند ایجنت هوش مصنوعی بدون تداخل و بازنویسی کد
 
 [فارسی](README.fa.md) | [English](README.md)
 
 [![CI](https://github.com/reza17223/antigravity-multi-agent-syn/actions/workflows/ci.yml/badge.svg)](https://github.com/reza17223/antigravity-multi-agent-syn/actions/workflows/ci.yml)
 
-سرور هماهنگی شبکه محلی (LAN)، سرور MCP، رابط خط فرمان (CLI)، کنترل‌پنل گرافیکی و هوک‌های محافظ ویرایش/کامیت — **کاملاً بدون وابستگی خارجی (فقط کتابخانه استاندارد Python 3.12+)** — تا **هر نوع ایجنت کدنویسی هوش مصنوعی** از جمله **Antigravity، Claude Code، Cursor، Windsurf، Codex، Gemini CLI یا اسکریپت‌های CLI** روی سیستم‌های جداگانه یا فضای کاری موازی بتوانند بدون بازنویسی کد یا تداخل قفل روی یک پروژه همکاری کنند.
+اگر شما و همکارتان روی یک پروژه کار می‌کنید و هر دو از ایجنت‌های کدنویسی (مثل **Antigravity**، **Claude Code**، **Cursor**، **Windsurf**، **Codex** یا **Gemini CLI**) استفاده می‌کنید، احتمالاً با این مشکل روبه‌رو شده‌اید:
+
+ایجنت‌ها به‌طور پیش‌فرض از کار همدیگر خبر ندارند؛ ممکن است هر دو هم‌زمان روی یک فایل بنویسند، کد همدیگر را پاک کنند یا بیلد پروژه را خراب کنند.
+
+**`agsync` این مشکل را حل می‌کند.** مثل یک **واکی‌تاکی + تابلوی تسک + قفل هوشمند فایل** بین ایجنت‌هاست. بدون نیاز به نصب هیچ کتابخانه اضافه‌ای — فقط با پایتون ۳.۱۲ استاندارد.
 
 ---
 
-## چرا `agsync` ساخته شده؟
+## به زبان ساده چیکار می‌کند؟
 
-ابزارهای کدنویسی هوش مصنوعی به‌صورت محلی روی سیستم هر برنامه‌نویس اجرا می‌شوند و **امکان ارتباط مستقیم بین دو سیستم، قفل توزیع‌شده فایل‌ها یا تابلوی تسک مشترک ندارند**. اشتراک‌گذاری مستقیم پوشه پروژه از طریق SMB، OneDrive یا Syncthing باعث بازنویسی خاموش کد، خرابی `.git/index.lock` و تداخل `node_modules` و `.venv` می‌شود.
-
-**معماری هیبرید (لایه کد + لایه کنترل):**
-- **لایه کد (`Git`)**: هر ایجنت یا سیستم کلون (یا worktree) و برنچ مستقل خودش را دارد (`agent-a/<task>` و `agent-b/<task>`). هم با GitHub/GitLab و هم ۱۰۰٪ آفلاین روی شبکه محلی (LAN) کار می‌کند.
-- **لایه کنترل (`agsync`)**: یک سرور سبک Python 3.12 (`SQLite WAL` + `PRAGMA user_version`) روی یکی از سیستم‌ها اجرا می‌شود و از طریق **Streamable HTTP (`/mcp`)**، **Stdio MCP (`agsync.mcp_bridge`)** و **REST JSON** به همه ایجنت‌ها سرویس می‌دهد و با هوک‌های **`PreToolUse`** و **`pre-commit`** جلوی ویرایش یا کامیت فایل قفل‌شده را می‌گیرد.
-
----
-
-## ایجنت‌ها و IDEهای سازگار
-
-هر ابزار یا ایجنتی که با **MCP** (HTTP یا Stdio)، **REST API** یا **CLI** کار کند مستقیماً پشتیبانی می‌شود:
-
-| ایجنت / کلاینت | روش اتصال | وضعیت |
-|---|---|---|
-| **Antigravity** | Streamable HTTP (`/mcp`) یا Stdio + `.agents/hooks.json` | پشتیبانی کامل (تنظیم خودکار با `agsync setup-mcp`) |
-| **Claude Code / Cursor / Windsurf / Cline** | تنظیم استاندارد MCP (`url` یا `python -m agsync.mcp_bridge`) + `AGENTS.md` | پشتیبانی کامل از طریق MCP و CLI |
-| **Codex / Gemini CLI / اسکریپت‌های سفارشی** | Stdio MCP یا دستورات `python -m agsync.cli` / HTTP REST | پشتیبانی کامل |
-
-*(در فاز ۲ پراکسی یکپارچه هوک `agsync hook-proxy --host <ide>` برای هوک‌های بومی Claude Code و Cursor و مدیریت `git worktree` نیز اضافه می‌شود.)*
+- **قبل از ویرایش فایل قفل می‌گیرد:** وقتی ایجنت A روی `auth.py` کار می‌کند، فایل قفل می‌شود. اگر ایجنت B بخواهد همان فایل یا پوشه‌اش را تغییر دهد، `agsync` خودکار جلویش را می‌گیرد.
+- **کد هر کس روی برنچ خودش امن می‌ماند:** هر نفر در پوشه و برنچ خودش کار می‌کند تا `node_modules`، `.venv` و `.git` با هم تداخل نداشته باشند.
+- **تسک‌ها، پیام‌ها و قراردادها زنده ردوبدل می‌شوند:** ایجنت‌ها تسک‌ها را بین خودشان تقسیم می‌کنند (دو نفر هم‌زمان یک تسک را برنمی‌دارند)، به هم پیام می‌دهند و آدرس APIها را به اشتراک می‌گذارند.
+- **هم در شبکه محلی (LAN) و هم از راه دور کار می‌کند:** چه کنار هم روی یک وای‌فای باشید، چه در دو شهر مختلف با **لینک دعوت یک‌بارمصرف (`Join Link`)** و **Cloudflare Tunnel**.
+- **محدود به یک ابزار نیست:** از **Antigravity، Claude Code و Cursor** به‌صورت مستقیم پشتیبانی می‌کند و برای **Windsurf، Codex، Gemini CLI** و اسکریپت‌های سفارشی هم آماده است.
 
 ---
 
-## قابلیت‌های کلیدی (`v0.1.0` — فاز ۱)
+## راه‌اندازی سریع (در ۲ دقیقه)
 
-- **قفل انحصاری (Lease) با TTL و Fencing Token**: قفل سلسله‌مراتبی (`file`، `dir`، `symbol`) با تطبیق مسیرهای بدون حساسیت به حروف بزرگ/کوچک در ویندوز و حفظ مسیر منطقی در Directory Junctionها.
-- **تقسیم تسک اتمیک و قرارداد مشترک**: رد تصاحب هم‌زمان تسک با `409 Conflict`، کلید-مقدار مشترک (`context_kv`) با کنترل نسخه خوش‌بینانه (`expected_version`) و پیام‌رسانی مستقیم/گروهی با تایید خواندن صریح (`POST /messages/ack`).
-- **سخت‌سازی امنیتی و هم‌زمانی**:
-  - اجبار `Content-Type: application/json` (`415`) و اعتبارسنجی `Host`/`Origin` (`403`) در برابر CSRF و DNS-rebinding.
-  - خواندنی‌بودن کامل `GET /messages` (تغییر نشانگر خواندن فقط از طریق `POST /messages/ack`).
-  - اجبار Bearer Token (`--token`، `--auto-token` یا `--allow-insecure-lan`) هنگام بایند روی `0.0.0.0`.
-  - قفل پورت `SO_EXCLUSIVEADDRUSE` در ویندوز و فایل `<db>.pid` برای جلوگیری از هاب زامبی.
-  - دور زدن خودکار پروکسی سیستم (`ProxyHandler({})`) برای آدرس‌های محلی و شبکه خصوصی LAN (جلوگیری از اختلال v2rayN / Clash / Happ).
-- **سازگاری با Worktree، BOM/UTF-16 و مسیرهای محافظت‌شده**:
-  - استفاده از `git rev-parse --git-common-dir` و `--git-path hooks` در `install-hooks`، حذف مسیر ثابت venv از `pre-commit` و ادغام اتمیک (`.bak` + `os.replace`) برای فایل‌های JSON.
-  - خواندن امن فایل‌های UTF-8 BOM / UTF-16 پاورشل و محافظت `.agsync/**`، `.agsync-agent` و `.agents/hooks.json` در برابر ویرایش ایجنت.
-- **عیب‌یاب (`agsync doctor`) و داشبورد زنده**: دستور و دکمه عیب‌یابی محیط/شبکه/هوک + داشبورد وب در `GET /dashboard`.
+### روش ۱: پنل گرافیکی ویندوز (ساده‌ترین راه)
 
-### قابلیت‌های فاز ۲ (`feat/phase2-multi-ide-remote`)
-- **پراکسی هوک چند-IDE (`agsync hook-proxy --host antigravity|claude|cursor`)**: ترجمه ورودی/خروجی بین Antigravity (`ask`/`deny`)، Claude Code (`tool_name`/`tool_input`، `exit 2` + `stderr`) و Cursor (جلوگیری از اجرای تکراری `.claude/`)، همراه با `--record` و زنجیره‌سازی ایمن هوک قبلی کاربر.
-- **مدیریت `git worktree` (`agsync worktree create|list|remove`)**: ساخت worktree هم‌سطح `../<repo>-wt-<n>` با هویت صریح `.agsync-agent` و اتصال Junction بدون نیاز به Admin برای `node_modules`/`.venv`.
-- **اتصال از راه دور و Onboarding یک‌کلیکه**: دستورات `agsync invite` / `agsync join` (امضای HMAC و مصرف اتمیک تک‌بارمصرف + صدور توکن اختصاصی هر `agent_id`)، آداپتور Cloudflare Tunnel (`--protocol http2`) و دکمه‌های مربوطه در `scripts/control_panel.py`.
-- **رویدادهای بلادرنگ و داشبورد زنده**: جدول `events` (Ring Buffer هزارتایی + `boot_id`)، ابزار `sync_wait` در MCP (حداکثر ۱۵ ثانیه با `Condition`)، long-polling روی `GET /events` و نوتیفیکیشن مرورگر در `/dashboard`.
+1. روی فایل **`Start_Sync_Panel.bat`** دبل‌کلیک کنید.
+2. **روی سیستم میزبان (نفر اول):**
+   - نقش را روی **`HOST (Hub)`** بگذارید، یک نام (مثلاً `reza`) بنویسید و **`Generate Token`** را بزنید.
+   - اگر همکارتان کنار شماست، **`Open Firewall (Admin)`** و بعد **`Start Hub Server`** را بزنید.
+   - با **`Browse...`** پوشه پروژه‌تان را انتخاب کنید و دکمه‌های **`Connect Antigravity MCP`** و **`Install Repo Hooks & Templates`** را بزنید. *(اگر پوشه هنوز Git نداشته باشد، پنل خودکار پیشنهاد می‌دهد برایتان بسازد.)*
+3. **روی سیستم همکار (نفر دوم):**
+   - **`Start_Sync_Panel.bat`** را باز کنید و نقش را روی **`PEER (Client)`** بگذارید.
+   - **اگر کنار هم هستید:** آی‌پی میزبان را وارد کنید (یا **`Discover LAN Hub`** را بزنید)، توکن را Paste کنید و **`Test Connection (TCP + /health)`** را بزنید.
+   - **اگر از راه دور هستید:** نفر اول دکمه **`Cloudflare Tunnel`** و بعد **`Create Join Link...`** را می‌زند و لینک را می‌فرستد؛ نفر دوم فقط دکمه **`Join Remote Hub...`** را می‌زند و لینک را Paste می‌کند.
+   - پوشه پروژه را انتخاب و MCP + هوک‌ها را نصب کنید.
 
-### قابلیت‌های فاز ۳ (`v0.3.0`)
-- **بررسی پیش‌دستانه تداخل گیت (`agsync merge-check`)**: اجرای `git merge-tree --write-tree` بدون دست‌زدن به Working Tree برای کشف زودهنگام تعارض شاخه‌ها.
-- **هوک‌های شل خارجی (`External Shell Hooks`)**: اجرای دستورات دلخواه کاربر از `agsync.config.json` روی رویدادهای `on_lock`، `on_task_done` و `pre_merge`.
-- **مدیریت صریح حالت Offline**: ورود کلاینت به حالت `offline_read_only` هنگام قطع ارتباط با هاب (`ping_or_offline()`) برای جلوگیری از صدور قفل اشتباه.
-- **بسته‌بندی نهایی**: آماده نصب با `pip install .` / `uvx` از طریق `pyproject.toml` و اسکریپت `scripts/build_exe.py` برای ساخت `.exe` ویندوز.
+### روش ۲: خط فرمان (مک / لینوکس / ویندوز)
 
----
-
-## شروع سریع
-
-### روش اول: کنترل‌پنل گرافیکی (پیشنهادی در ویندوز)
-1. فایل `Start_Sync_Panel.bat` را باز کنید (یا `python scripts/control_panel.py` را اجرا کنید).
-2. **سیستم میزبان (Host):** نقش را روی `HOST (Hub)` بگذارید، `Agent ID` را وارد کنید، **Generate Token** را بزنید (یا بگذارید خودکار ساخته شود)، در شبکه محلی **Open Firewall (Admin)** را بزنید و **Start Hub Server** را کلیک کنید.
-3. **سیستم همکار (Peer):** نقش را روی `PEER (Client)` بگذارید، IP میزبان را بدهید (یا **Discover LAN Hub** را بزنید)، توکن را وارد کرده و **Test Connection (TCP + /health)** را بزنید.
-4. مسیر پروژه را انتخاب کنید و روی هر کلاینت MCP خود (با دکمه **Connect Antigravity MCP** یا قرار دادن کانفیگ استاندارد MCP در کلاینت‌های دیگر) و **Install Repo Hooks & Templates** کلیک کنید.
-
-### روش دوم: خط فرمان (هر سیستم‌عامل و هر ایجنتی)
-1. **اجرای هاب** (مسیر پیش‌فرض دیتابیس `~/.agsync/state.db` است):
+1. **اجرای هاب** روی سیستم اول:
    ```powershell
-   $env:AGSYNC_TOKEN = "your-shared-secret"
+   $env:AGSYNC_TOKEN = "my-secret-token"
    python -m agsync.cli serve --host 0.0.0.0 --port 8765
    ```
-   *(برای تست فقط روی همین سیستم با `127.0.0.1`، توکن اجباری نیست.)*
-2. **اتصال هر ایجنت سازگار با MCP** (مطابق `templates/mcp_config.http.json` یا `templates/mcp_config.stdio.json`):
-   ```json
-   {
-     "mcpServers": {
-       "agsync": {
-         "url": "http://127.0.0.1:8765/mcp?agent=agent-a",
-         "headers": {
-           "X-Agent-Id": "agent-a",
-           "Authorization": "Bearer your-shared-secret"
-         }
-       }
-     }
-   }
-   ```
-3. **نصب هوک‌ها و اجرای عیب‌یاب روی مخزن پروژه:**
+2. **اتصال به IDE / ایجنت دلخواه شما:**
    ```powershell
-   python -m agsync.cli install-hooks --repo /path/to/project --server http://127.0.0.1:8765 --agent agent-a --with-antigravity-hook --with-templates
-   python -m agsync.cli doctor --repo /path/to/project
+   # انتخاب IDE: antigravity یا claude یا cursor
+   python -m agsync.cli setup-mcp --ide claude --server http://127.0.0.1:8765 --agent claude-a --token my-secret-token
+   python -m agsync.cli install-hooks --repo C:\path\to\project --ide claude --with-templates
+   ```
+3. **اطمینان از سلامت تنظیمات:**
+   ```powershell
+   python -m agsync.cli doctor --repo C:\path\to\project
    ```
 
 ---
 
-## تست و بررسی سلامت
+## کارهای جالب دیگری که می‌توانید انجام دهید
 
-```powershell
-python -m unittest discover -s tests -v
-python scripts/smoke_check.py --spawn-local
-python -m agsync.cli doctor --repo .
-```
+- **دیدن وضعیت زنده تیم:** مرورگر را باز کنید و بروید به `http://<HOST_IP>:8765/dashboard` (یا در پنل دکمه **Open Web Dashboard** را بزنید).
+- **اجرای چند ایجنت هم‌زمان روی یک سیستم:** با `agsync worktree create --agent agent-2` یک پوشه کاری تمیز و جدا برای ایجنت دوم بسازید.
+- **چک کردن تداخل برنچ‌ها قبل از Merge:** دستور `agsync merge-check --base main --target HEAD`.
+- **اجرای تست‌های پروژه:** `python -m unittest discover -s tests -v`.
 
 ---
 
-## فهرست مستندات
+## راهنماهای بیشتر
 
-| موضوع | فارسی | English |
-|---|---|---|
-| **معرفی و شروع سریع** | [README.fa.md](README.fa.md) / [docs/OVERVIEW.fa.md](docs/OVERVIEW.fa.md) | [README.md](README.md) |
-| **راهنمای گام‌به‌گام نصب** | [docs/SETUP_GUIDE.fa.md](docs/SETUP_GUIDE.fa.md) | [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) |
-| **معماری و مقایسه روش‌ها** | [docs/ARCHITECTURE.fa.md](docs/ARCHITECTURE.fa.md) | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| **نقشه راه (فاز ۱ تا ۳)** | [docs/ROADMAP.fa.md](docs/ROADMAP.fa.md) | — |
-| **چک‌لیست ارزیابی فنی** | — | [docs/RUBRIC.md](docs/RUBRIC.md) |
+- **نسخه انگلیسی README:** [README.md](README.md)
+- **معرفی ساده و کامل فارسی:** [docs/OVERVIEW.fa.md](docs/OVERVIEW.fa.md)
+- **راهنمای گام‌به‌گام نصب:** [docs/SETUP_GUIDE.fa.md](docs/SETUP_GUIDE.fa.md) | [English](docs/SETUP_GUIDE.md)
+- **معماری و پشت صحنه:** [docs/ARCHITECTURE.fa.md](docs/ARCHITECTURE.fa.md) | [English](docs/ARCHITECTURE.md)
+- **نقشه راه:** [docs/ROADMAP.fa.md](docs/ROADMAP.fa.md)
