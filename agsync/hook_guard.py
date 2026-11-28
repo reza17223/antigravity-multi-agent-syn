@@ -77,8 +77,11 @@ def _is_protected_rel_path(rel_path: str) -> bool:
 
 def _find_repo_root_strict(start: Path) -> Path | None:
     cur = Path(_logical_abs(start))
+    home = Path.home().resolve()
     for candidate in (cur, *cur.parents):
-        if (candidate / ".git").exists() or (candidate / ".agsync").exists():
+        if (candidate / ".git").exists():
+            return candidate
+        if candidate.resolve() != home and (candidate / ".agsync").exists():
             return candidate
     return None
 
@@ -159,6 +162,9 @@ def evaluate_hook_payload(
     target_repo = _find_repo_root_strict(target_path.parent)
     if target_repo is not None and target_repo not in candidate_roots:
         candidate_roots.append(target_repo)
+
+    # Sort candidates by longest path first (most specific inner repository takes precedence)
+    candidate_roots.sort(key=lambda p: len(str(p)), reverse=True)
 
     repo_root: Path | None = None
     rel_path: str | None = None

@@ -22,8 +22,11 @@ def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[bytes]:
 def find_repo_root(start: Path) -> Path:
     """Walk upward logically (preserving junctions) to find .git or .agsync root."""
     cur = Path(os.path.abspath(os.path.normpath(str(start))))
+    home = Path.home().resolve()
     for candidate in (cur, *cur.parents):
-        if (candidate / ".git").exists() or (candidate / ".agsync").exists():
+        if (candidate / ".git").exists():
+            return candidate
+        if candidate.resolve() != home and (candidate / ".agsync").exists():
             return candidate
     return cur
 

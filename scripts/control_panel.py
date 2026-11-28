@@ -672,6 +672,8 @@ class AgsyncControlPanel:
             "--with-antigravity-hook",
             "--with-templates",
         ]
+        if auto_git_init:
+            cmd.append("--init-if-needed")
         env = dict(os.environ)
         if tok:
             env["AGSYNC_TOKEN"] = tok

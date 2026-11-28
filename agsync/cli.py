@@ -197,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inst.add_argument("--require-lease", action="store_true")
     p_inst.add_argument("--fail-closed", action="store_true")
     p_inst.add_argument("--force", action="store_true")
+    p_inst.add_argument("--init-if-needed", action="store_true", help="Run 'git init -b main' if target is not a Git repo.")
     p_inst.add_argument("--ide", choices=["antigravity", "claude", "cursor"], default="antigravity")
 
     # doctor

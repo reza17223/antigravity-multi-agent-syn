@@ -350,8 +350,8 @@ class TestMCPAndHooks(unittest.TestCase):
 
     def test_pre_tool_use_hook_guard_subprocess(self) -> None:
         client = SyncClient(self.base_url)
-        client.acquire_lease("src/locked.py", "machine-b", scope="file", reason="editing")
-        client.acquire_lease("src/mine.py", "machine-a", scope="file", reason="my file")
+        client.acquire_lease("src/locked.py", "machine-b", scope="file", reason="editing", ttl_sec=300)
+        client.acquire_lease("src/mine.py", "machine-a", scope="file", reason="my file", ttl_sec=300)
 
         repo_dir = Path(self.tmp.name) / "fake_repo"
         (repo_dir / ".git").mkdir(parents=True)

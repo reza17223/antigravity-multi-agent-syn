@@ -186,6 +186,21 @@ def _resolve_hook_python_command() -> str:
 
 def cmd_install_hooks(args: argparse.Namespace) -> int:
     repo = Path(os.path.abspath(os.path.normpath(str(args.repo))))
+    if getattr(args, "init_if_needed", False) and not (repo / ".git").exists():
+        import subprocess
+
+        try:
+            init_res = subprocess.run(
+                ["git", "init", "-b", "main"],
+                cwd=str(repo),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if init_res.returncode == 0:
+                sys.stdout.write(f"Initialized Git repository in '{repo}' (branch: main).\n")
+        except Exception as exc:
+            sys.stderr.write(f"Warning: Failed to auto-initialize git repository: {exc}\n")
     try:
         common_dir = git_common_dir(repo)
         hooks_dir = git_hooks_dir(repo)
