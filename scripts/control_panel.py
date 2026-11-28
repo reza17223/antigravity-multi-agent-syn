@@ -135,6 +135,7 @@ class AgsyncControlPanel:
         ttk.Button(net_btns, text="Detect My IP", command=self._refresh_ip).pack(side="left", padx=3)
         ttk.Button(net_btns, text="Discover LAN Hub", command=self.discover_lan).pack(side="left", padx=3)
         ttk.Button(net_btns, text="Generate Token", command=self._generate_token).pack(side="left", padx=3)
+        ttk.Button(net_btns, text="Copy Token", command=self._copy_token).pack(side="left", padx=3)
         ttk.Button(net_btns, text="Save Config", command=self._save_current_config).pack(side="left", padx=3)
 
         # 2. Hub & Diagnostics Controls
@@ -242,6 +243,16 @@ class AgsyncControlPanel:
         self.token_var.set(tok)
         self._save_current_config()
         self.log("Generated new Bearer token and saved config.")
+
+    def _copy_token(self) -> None:
+        tok = self.token_var.get().strip()
+        if not tok:
+            messagebox.showinfo("No Token", "Token field is empty. Click 'Generate Token' first.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(tok)
+        self.root.update()
+        self.log("Bearer token copied to clipboard.")
 
     def _save_current_config(self) -> None:
         port_raw = self.port_var.get().strip() or "8765"
