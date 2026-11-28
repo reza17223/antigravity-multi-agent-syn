@@ -88,7 +88,7 @@ def check_github_update() -> dict[str, Any]:
                 "has_update": has_update,
                 "latest_version": display_latest,
                 "current_version": cur_clean,
-                "zip_url": f"https://github.com/{GITHUB_REPO}/releases/download/{latest_tag}/antigravity-multi-agent-sync-{latest_tag}.zip",
+                "zip_url": f"https://github.com/{GITHUB_REPO}/archive/refs/tags/{latest_tag}.zip",
                 "tag_name": latest_tag,
                 "via_git": True,
             }
@@ -126,7 +126,10 @@ def check_github_update() -> dict[str, Any]:
             zip_url = str(asset.get("browser_download_url", ""))
             break
     if not zip_url:
-        zip_url = str(data.get("zipball_url", ""))
+        tag_str = str(data.get("tag_name") or tag)
+        if not tag_str.startswith("v"):
+            tag_str = f"v{tag_str}"
+        zip_url = f"https://github.com/{GITHUB_REPO}/archive/refs/tags/{tag_str}.zip"
 
     return {
         "has_update": has_update,

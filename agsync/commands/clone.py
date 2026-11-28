@@ -181,6 +181,15 @@ def pull_latest_changes(
                 msg = m_res.stdout.strip() or m_res.stderr.strip()
                 _log(f"Synced from host bundle: {msg}")
                 return {"status": "ok", "output": msg}
+            elif dl_info.get("format") == "zip":
+                with zipfile.ZipFile(temp_bundle, "r") as zf:
+                    for member in zf.infolist():
+                        clean_name = member.filename.replace("\\", "/")
+                        if clean_name.startswith((".git", ".agsync", "docs/")) or clean_name in (".gitignore",):
+                            continue
+                        zf.extract(member, repo)
+                _log("Synced updated files from host archive.")
+                return {"status": "ok", "output": "Updated files from host archive."}
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception as exc:
