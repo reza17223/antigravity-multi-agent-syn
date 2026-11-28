@@ -338,7 +338,7 @@ class AgsyncControlPanel:
         ttk.Button(row2, text="Check Live Agents & Locks", command=self.check_status).pack(side="left", padx=4)
         ttk.Button(row2, text="📨 Inbox / پیام‌ها", command=self.check_inbox_ui).pack(side="left", padx=4)
         ttk.Button(row2, text="💬 Send Message...", command=self.send_message_dialog).pack(side="left", padx=4)
-        ttk.Button(row2, text="Open Web Dashboard", command=self.open_dashboard).pack(side="left", padx=4)
+        ttk.Button(row2, text="🌐 Open Web Dashboard (داشبورد زنده)", command=self.open_dashboard).pack(side="left", padx=4)
 
         self.discover_chk_var = tk.BooleanVar(value=bool(self.cfg.get("discover", True)))
         ttk.Checkbutton(row2, text="Broadcast LAN Discovery", variable=self.discover_chk_var).pack(
@@ -588,6 +588,8 @@ class AgsyncControlPanel:
         start_offset = self._server_log_fh.tell()
 
         self.log(f"Starting hub server on :{port_num} (log: {hub_log_path})")
+        lan_ip = self.host_ip_var.get().strip() or detect_lan_ip()
+        self.log(f"🌐 Live Web Dashboard: http://{lan_ip}:{port_num}/dashboard (or click 'Open Web Dashboard')")
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self.server_proc = subprocess.Popen(
             cmd,
