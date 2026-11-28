@@ -271,7 +271,8 @@ class AgsyncControlPanel:
         header.pack(fill="x", **pad)
 
         ttk.Label(header, text=f"agsync Control Panel v{__version__}", font=("Segoe UI", 14, "bold")).pack(side="left")
-        ttk.Button(header, text="🚀 Check for Updates", command=self.check_updates_ui).pack(side="left", padx=16)
+        self.update_btn = ttk.Button(header, text="🚀 Check for Updates", command=self.check_updates_ui)
+        self.update_btn.pack(side="left", padx=16)
 
         self.status_lbl = tk.Label(
             header,
@@ -445,6 +446,20 @@ class AgsyncControlPanel:
         )
         self.log_box.pack(fill="both", expand=True, padx=6, pady=6)
         self.log(f"Unified Panel ready. Data dir: {default_data_dir()}")
+        self.root.after(1500, self._start_bg_update_check)
+
+    def _start_bg_update_check(self) -> None:
+        def _check() -> None:
+            try:
+                from scripts.updater import check_github_update
+                info = check_github_update()
+                if info.get("has_update"):
+                    latest = info.get("latest_version")
+                    self.root.after(0, lambda: self.update_btn.config(text=f"🔥 Update v{latest} Available!"))
+            except Exception:
+                pass
+
+        threading.Thread(target=_check, daemon=True).start()
 
     def _validated_port(self) -> int | None:
         raw = self.port_var.get().strip() or "8765"
@@ -1657,7 +1672,8 @@ class AgsyncControlPanel:
         threading.Thread(target=_loop, daemon=True).start()
 
     def check_updates_ui(self) -> None:
-        self.log("Checking GitHub for agsync updates...")
+        self.log("Checking GitHub and LAN for agsync updates...")
+        peer_ip = self.host_ip_var.get().strip() or None
 
         def _worker() -> None:
             from scripts.updater import check_github_update, perform_update
@@ -1670,29 +1686,36 @@ class AgsyncControlPanel:
                     if messagebox.askyesno(
                         "Update Connection Notice",
                         f"GitHub API connection timed out ({info['error']}).\n\n"
-                        "Would you like to try updating directly via Git / direct download?",
+                        "Would you like to try updating directly via Git / LAN peer?",
+                        parent=self.root,
                     ):
                         def _update_job() -> None:
-                            ok, msg = perform_update(log_fn=self.log)
+                            ok, msg = perform_update(log_fn=self.log, peer_ip=peer_ip)
                             if ok:
-                                messagebox.showinfo(
-                                    "Update Complete",
-                                    f"Successfully updated agsync!\n\n{msg}\n\nPlease restart the panel to use the new version.",
-                                )
+                                self.log("Update applied successfully.")
+                                if messagebox.askyesno(
+                                    "Update Complete - Restart Now?",
+                                    f"Successfully updated agsync!\n\n{msg}\n\nRestart control panel now to apply update?",
+                                    parent=self.root,
+                                ):
+                                    self._save_current_config()
+                                    subprocess.Popen([sys.executable, str(Path(__file__).resolve())])
+                                    self.root.destroy()
                             else:
-                                messagebox.showerror("Update Failed", f"Update failed: {msg}")
+                                messagebox.showerror("Update Failed", f"Update failed: {msg}", parent=self.root)
 
                         threading.Thread(target=_update_job, daemon=True).start()
 
                 self.root.after(0, _fallback_prompt)
                 return
+
             cur = info.get("current_version")
             if not info.get("has_update"):
                 self.log(f"agsync is up to date (v{cur}).")
                 self.root.after(
                     0,
                     lambda: messagebox.showinfo(
-                        "Up to Date", f"You are running the latest version of agsync (v{cur})."
+                        "Up to Date", f"You are running the latest version of agsync (v{cur}).", parent=self.root
                     ),
                 )
                 return
@@ -1703,17 +1726,23 @@ class AgsyncControlPanel:
             def _prompt() -> None:
                 if messagebox.askyesno(
                     "Update Available",
-                    f"A new version of agsync is available!\n\nCurrent version: v{cur}\nLatest version: v{latest}\n\nWould you like to install the update now?",
+                    f"A new version of agsync is available!\n\nCurrent version: v{cur}\nLatest version: v{latest}\n\nWould you like to install the update and restart now?",
+                    parent=self.root,
                 ):
                     def _update_job() -> None:
-                        ok, msg = perform_update(log_fn=self.log)
+                        ok, msg = perform_update(log_fn=self.log, peer_ip=peer_ip)
                         if ok:
-                            messagebox.showinfo(
-                                "Update Complete",
-                                f"Successfully updated to v{latest}!\n\nPlease restart the panel to use the new version.",
-                            )
+                            self.log(f"Successfully updated to v{latest}!")
+                            if messagebox.askyesno(
+                                "Update Complete - Restart Now?",
+                                f"Successfully updated agsync to v{latest}!\n\n{msg}\n\nRestart control panel now to apply changes?",
+                                parent=self.root,
+                            ):
+                                self._save_current_config()
+                                subprocess.Popen([sys.executable, str(Path(__file__).resolve())])
+                                self.root.destroy()
                         else:
-                            messagebox.showerror("Update Failed", f"Update failed: {msg}")
+                            messagebox.showerror("Update Failed", f"Update failed: {msg}", parent=self.root)
 
                     threading.Thread(target=_update_job, daemon=True).start()
 

@@ -323,9 +323,10 @@ def check_github_update() -> dict[str, Any]:
 def perform_update(
     root_dir: Path | str = ROOT_DIR,
     force: bool = False,
+    peer_ip: str | None = None,
     log_fn: Callable[[str], None] | None = None,
 ) -> tuple[bool, str]:
-    """Perform self-update via Git pull or zip patch download without losing config.json."""
+    """Perform self-update via Git pull (GitHub / LAN) or zip patch download without losing config.json."""
     def _log(msg: str) -> None:
         if log_fn:
             log_fn(msg)
@@ -336,6 +337,9 @@ def perform_update(
     proxy = detect_system_proxy()
     if proxy:
         _log(f"Active proxy detected: {proxy}")
+
+    updated = False
+    success_msg = ""
 
     # Strategy 1: Git pull if it's a git clone
     if (target / ".git").exists():
@@ -351,78 +355,114 @@ def perform_update(
                 capture_output=True,
                 text=True,
                 env=env,
-                timeout=30.0,
+                timeout=25.0,
             )
             if res.returncode == 0:
                 out = res.stdout.strip()
                 _log(f"Git update successful: {out}")
-                return True, f"Git pull complete: {out}"
+                updated = True
+                success_msg = f"Git pull complete: {out}"
             else:
-                _log(f"Git pull notice ({res.stderr.strip()}), falling back to release download...")
+                _log(f"Git pull from GitHub notice ({res.stderr.strip()})")
         except Exception as exc:
-            _log(f"Git command timed out or failed: {exc}. Trying zip download...")
+            _log(f"GitHub git pull timed out/failed: {exc}")
+
+        # Strategy 1b: If GitHub failed and peer_ip is given, try LAN Git
+        if not updated and peer_ip:
+            lan_url = f"git://{peer_ip}:9418/antigravity_multi_agent_sync"
+            _log(f"Attempting LAN Git update from peer: {lan_url}...")
+            try:
+                res_lan = subprocess.run(
+                    ["git", "pull", lan_url, "main"],
+                    cwd=str(target),
+                    capture_output=True,
+                    text=True,
+                    timeout=15.0,
+                )
+                if res_lan.returncode == 0:
+                    out = res_lan.stdout.strip()
+                    _log(f"LAN Git update successful: {out}")
+                    updated = True
+                    success_msg = f"LAN Git update complete: {out}"
+            except Exception as exc:
+                _log(f"LAN Git update notice: {exc}")
 
     # Strategy 2: Download release or main branch zip
-    _log("Checking update source on GitHub...")
-    info = check_github_update()
-    zip_url = info.get("zip_url") or f"https://github.com/{GITHUB_REPO}/archive/refs/heads/main.zip"
-    latest_ver = info.get("latest_version") or "latest"
+    if not updated:
+        _log("Checking update source on GitHub...")
+        info = check_github_update()
+        zip_url = info.get("zip_url") or f"https://github.com/{GITHUB_REPO}/archive/refs/heads/main.zip"
+        latest_ver = info.get("latest_version") or "latest"
 
-    _log(f"Downloading update (v{latest_ver}) from {zip_url}...")
+        _log(f"Downloading update (v{latest_ver}) from {zip_url}...")
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="agsync_update_"))
-    try:
-        temp_zip = temp_dir / "update.zip"
-        download_ok = download_file(zip_url, temp_zip, timeout=90.0, log_fn=_log)
+        temp_dir = Path(tempfile.mkdtemp(prefix="agsync_update_"))
+        try:
+            temp_zip = temp_dir / "update.zip"
+            download_ok = download_file(zip_url, temp_zip, timeout=90.0, log_fn=_log)
 
-        # Fallback to main branch archive if specific tag zip failed
-        if not download_ok and "refs/tags" in zip_url:
-            fallback_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/main.zip"
-            _log(f"Tag download timed out. Retrying with main branch archive: {fallback_url}...")
-            download_ok = download_file(fallback_url, temp_zip, timeout=90.0, log_fn=_log)
+            # Fallback to main branch archive if specific tag zip failed
+            if not download_ok and "refs/tags" in zip_url:
+                fallback_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/main.zip"
+                _log(f"Tag download timed out. Retrying with main branch archive: {fallback_url}...")
+                download_ok = download_file(fallback_url, temp_zip, timeout=90.0, log_fn=_log)
 
-        if not download_ok:
-            return False, "Failed to download update archive from GitHub. Please check your internet/VPN connection."
+            if not download_ok:
+                return False, "Failed to download update archive from GitHub or LAN. Please check network connection."
 
-        _log(f"Downloaded update archive ({temp_zip.stat().st_size} bytes). Extracting...")
-        extract_dir = temp_dir / "extracted"
-        extract_dir.mkdir(exist_ok=True)
-        with zipfile.ZipFile(temp_zip, "r") as zf:
-            zf.extractall(extract_dir)
+            _log(f"Downloaded update archive ({temp_zip.stat().st_size} bytes). Extracting...")
+            extract_dir = temp_dir / "extracted"
+            extract_dir.mkdir(exist_ok=True)
+            with zipfile.ZipFile(temp_zip, "r") as zf:
+                zf.extractall(extract_dir)
 
-        # Detect extracted root folder (GitHub zips usually have repo-name-version/)
-        candidates = list(extract_dir.iterdir())
-        source_dir = extract_dir
-        if len(candidates) == 1 and candidates[0].is_dir():
-            source_dir = candidates[0]
+            # Detect extracted root folder (GitHub zips usually have repo-name-version/)
+            candidates = list(extract_dir.iterdir())
+            source_dir = extract_dir
+            if len(candidates) == 1 and candidates[0].is_dir():
+                source_dir = candidates[0]
 
-        _log(f"Applying patch into {target} (preserving config.json and state.db)...")
-        updated_count = 0
-        for root, dirs, files in os.walk(source_dir):
-            rel = os.path.relpath(root, source_dir)
-            if rel != "." and (rel.startswith(".git") or rel.startswith(".agsync")):
-                continue
-            dest_folder = target / rel if rel != "." else target
-            dest_folder.mkdir(parents=True, exist_ok=True)
-            for f in files:
-                # Strictly preserve local user configuration and database files!
-                if f in ("config.json", "state.db") or f.endswith(".sqlite") or f.endswith(".db"):
+            _log(f"Applying patch into {target} (preserving config.json and state.db)...")
+            updated_count = 0
+            for root, dirs, files in os.walk(source_dir):
+                rel = os.path.relpath(root, source_dir)
+                if rel != "." and (rel.startswith(".git") or rel.startswith(".agsync")):
                     continue
-                src_file = Path(root) / f
-                dst_file = dest_folder / f
-                try:
-                    shutil.copy2(src_file, dst_file)
-                    updated_count += 1
-                except OSError:
-                    pass
+                dest_folder = target / rel if rel != "." else target
+                dest_folder.mkdir(parents=True, exist_ok=True)
+                for f in files:
+                    # Strictly preserve local user configuration and database files!
+                    if f in ("config.json", "state.db") or f.endswith(".sqlite") or f.endswith(".db"):
+                        continue
+                    src_file = Path(root) / f
+                    dst_file = dest_folder / f
+                    try:
+                        shutil.copy2(src_file, dst_file)
+                        updated_count += 1
+                    except OSError:
+                        pass
 
-        _log(f"Successfully applied {updated_count} updated files to agsync (v{latest_ver})!")
-        return True, f"Updated to v{latest_ver} successfully ({updated_count} files patched)."
-    except Exception as exc:
-        _log(f"Update failed: {exc}")
-        return False, str(exc)
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+            _log(f"Successfully applied {updated_count} updated files to agsync (v{latest_ver})!")
+            updated = True
+            success_msg = f"Updated to v{latest_ver} successfully ({updated_count} files patched)."
+        except Exception as exc:
+            _log(f"Update failed: {exc}")
+            return False, str(exc)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    if updated:
+        # Auto-run pip install -e . so active python environment reflects changes
+        try:
+            _log("Auto-installing updated package via pip (editable mode)...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-e", str(target)], cwd=str(target), capture_output=True, timeout=60.0)
+            _log("Pip package environment updated successfully.")
+        except Exception as exc:
+            _log(f"Pip install notice: {exc}")
+
+        return True, success_msg
+
+    return False, "Update was not applied."
 
 
 def main() -> int:
