@@ -284,14 +284,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <span class="badge info" id="feed-count">0</span>
           </h2>
           <div class="card-tools">
-            <label for="feed-filter">Filter</label>
-            <select id="feed-filter">
-              <option value="all">All events</option>
-              <option value="lease">Leases</option>
-              <option value="task">Tasks</option>
-              <option value="message">Messages</option>
-              <option value="agent">Agents</option>
-              <option value="context">Context</option>
+            <label for="feed-filter">فیلتر</label>
+            <select id="feed-filter" style="min-height:36px;font-size:13px;">
+              <option value="all">رویدادهای تیمی (Team Activities)</option>
+              <option value="message">💬 پیام‌ها (Messages)</option>
+              <option value="lease">🔒 قفل و آزادسازی فایل‌ها (Leases)</option>
+              <option value="task">📋 تسک‌ها (Tasks)</option>
+              <option value="agent">👤 حضور ایجنت‌ها (Agents)</option>
+              <option value="raw">⚙️ همه رویدادها شامل سیستمی (All Raw)</option>
             </select>
           </div>
         </div>
@@ -357,22 +357,64 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       return d.toLocaleTimeString([], { hour12: false });
     }
 
-    function eventBadgeClass(evType) {
+    function formatEventBadge(evType) {
       const t = String(evType || "");
-      if (t.includes("expired") || t.includes("released")) return "warn";
-      if (t.includes("acquired") || t.includes("created") || t.includes("registered")) return "ok";
-      if (t.includes("conflict") || t.includes("blocked")) return "danger";
-      return "info";
+      if (t === "message_sent") return '<span class="badge info">💬 پیام جدید</span>';
+      if (t === "lease_acquired") return '<span class="badge warn">🔒 قفل فایل</span>';
+      if (t === "lease_released") return '<span class="badge ok">🔓 آزادسازی قفل</span>';
+      if (t === "lease_expired") return '<span class="badge danger">⏰ انقضای قفل</span>';
+      if (t === "agent_registered") return '<span class="badge ok">👤 حضور ایجنت</span>';
+      if (t === "task_created") return '<span class="badge ok">📋 تسک جدید</span>';
+      if (t === "task_updated") return '<span class="badge info">📝 آپدیت تسک</span>';
+      if (t === "messages_acked") return '<span class="badge" style="opacity:0.6;">✓ تایید دریافت</span>';
+      return `<span class="badge info">${esc(t)}</span>`;
+    }
+
+    function formatSummary(ev) {
+      const evType = String(ev.event_type || "");
+      const payload = ev.payload || {};
+      const actor = esc(ev.actor_id || "-");
+      const target = esc(ev.target_id || "-");
+
+      if (evType === "message_sent") {
+        const bodyTxt = esc(payload.body || ev.summary || "");
+        return `<span style="font-weight:600;">${actor}</span> ➜ <span style="font-weight:600;">${target}</span>: <span style="color:var(--accent);font-style:italic;">"${bodyTxt}"</span>`;
+      }
+      if (evType === "lease_acquired") {
+        return `<span style="font-weight:600;">${actor}</span> فایل <code>${target}</code> را موقتاً قفل کرد تا تداخلی رخ ندهد.`;
+      }
+      if (evType === "lease_released") {
+        return `<span style="font-weight:600;">${actor}</span> ویرایش <code>${target}</code> را تمام و قفل را آزاد کرد.`;
+      }
+      if (evType === "lease_expired") {
+        return `قفل فایل <code>${target}</code> به دلیل بی‌کاری منقضی و برای دیگران آزاد شد.`;
+      }
+      if (evType === "agent_registered") {
+        const st = esc(payload.status || "online");
+        return `ایجنت <span style="font-weight:600;">${actor}</span> فعال شد (وضعیت: <b>${st}</b>).`;
+      }
+      if (evType === "task_created") {
+        const title = esc(payload.title || target);
+        return `<span style="font-weight:600;">${actor}</span> تسک جدید ایجاد کرد: <b>${title}</b>`;
+      }
+      if (evType === "task_updated") {
+        const st = esc(payload.status || "");
+        return `وضعیت تسک <code>${target}</code> به <b>${st}</b> تغییر یافت.`;
+      }
+      return esc(ev.summary || (actor + " ➜ " + target));
     }
 
     function matchesFeedFilter(evType, filterVal) {
-      if (filterVal === "all") return true;
       const t = String(evType || "");
+      if (filterVal === "all") {
+        // Hide noisy internal ACK bookkeeping in the main feed
+        return t !== "messages_acked";
+      }
+      if (filterVal === "raw") return true;
       if (filterVal === "lease") return t.startsWith("lease_");
       if (filterVal === "task") return t.startsWith("task_");
       if (filterVal === "message") return t.startsWith("message");
       if (filterVal === "agent") return t.startsWith("agent_");
-      if (filterVal === "context") return t.startsWith("context_");
       return true;
     }
 
@@ -430,16 +472,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById("feed-count").textContent = String(visible.length);
       const el = document.getElementById("feed-body");
       if (!visible.length) {
-        el.innerHTML = '<p class="empty">No matching coordination events yet.</p>';
+        el.innerHTML = '<p class="empty">رویدادی برای نمایش با این فیلتر وجود ندارد.</p>';
         return;
       }
-      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Target</th><th>Summary</th></tr></thead><tbody>' +
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th style="width:110px;">زمان</th><th style="width:140px;">نوع رویداد</th><th>شرح رویداد (Summary)</th></tr></thead><tbody>' +
         visible.map(ev => `<tr>
-          <td><code>${esc(formatTime(ev.created_at))}</code></td>
-          <td><span class="badge ${eventBadgeClass(ev.event_type)}">${esc(ev.event_type)}</span></td>
-          <td><code>${esc(ev.actor_id || "-")}</code></td>
-          <td><code>${esc(ev.target_id || "-")}</code></td>
-          <td>${esc(ev.summary || "-")}</td>
+          <td style="white-space:nowrap;"><code>${esc(formatTime(ev.created_at))}</code></td>
+          <td style="white-space:nowrap;">${formatEventBadge(ev.event_type)}</td>
+          <td>${formatSummary(ev)}</td>
         </tr>`).join("") + "</tbody></table></div>";
     }
 
@@ -624,14 +664,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function agentStateBadge(a) {
+      if (!a.is_online) {
+        return '<span class="badge danger" style="padding:4px 10px;font-size:12px;">🔴 OFFLINE (قطع)</span>';
+      }
+      const st = String(a.status || a.reported_status || "").toLowerCase();
+      const now = Date.now() / 1000;
+      const lastHb = Number(a.last_heartbeat || 0);
+      const isStale = (now - lastHb) > 70;
+      if (st === "idle" || isStale) {
+        return '<span class="badge warn" style="padding:4px 10px;font-size:12px;">🟡 IDLE (آماده‌باش)</span>';
+      }
+      if (st === "busy") {
+        return '<span class="badge info" style="padding:4px 10px;font-size:12px;">🔵 BUSY (مشغول)</span>';
+      }
+      return '<span class="badge ok" style="padding:4px 10px;font-size:12px;">🟢 ONLINE (فعال)</span>';
+    }
+
     function renderAgents(items) {
       document.getElementById("agents-count").textContent = String(items.length);
       const el = document.getElementById("agents-body");
-      if (!items.length) { el.innerHTML = '<p class="empty">No agents registered yet.</p>'; return; }
-      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Agent</th><th>State</th><th>Machine</th><th>Branch</th></tr></thead><tbody>' +
+      if (!items.length) { el.innerHTML = '<p class="empty">هیچ ایجنتی هنوز ثبت نشده است.</p>'; return; }
+      el.innerHTML = '<div class="table-wrap"><table><thead><tr><th>ایجنت (Agent)</th><th>وضعیت (Status)</th><th>سیستم (Machine)</th><th>شاخه (Branch)</th></tr></thead><tbody>' +
         items.map(a => `<tr>
           <td><code>${esc(a.agent_id)}</code></td>
-          <td><span class="badge ${a.is_online ? "ok" : "danger"}">${a.is_online ? "ONLINE" : "OFFLINE"}</span></td>
+          <td>${agentStateBadge(a)}</td>
           <td>${esc(a.machine_name || "-")}</td>
           <td><code>${esc(a.branch || "-")}</code></td>
         </tr>`).join("") + "</tbody></table></div>";
